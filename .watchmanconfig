@@ -1,0 +1,14 @@
+{
+  "cookie_dir": "/tmp",
+  "ignore_dirs": [
+    ".metro-cache",
+    "node_modules/.cache",
+    "node_modules/.bin",
+    ".git",
+    ".expo",
+    "android/build",
+    "android/.gradle",
+    "ios/build",
+    "ios/Pods"
+  ]
+}

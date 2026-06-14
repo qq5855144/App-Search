@@ -1,0 +1,14 @@
+diff --git a/scripts/install-skia.mjs b/scripts/install-skia.mjs
+index ac4e945f9acb611c43f60a38aaada1ca2b695bb2..d502637ac0e09d8016b2b174c08265237bf4085f 100644
+--- a/scripts/install-skia.mjs
++++ b/scripts/install-skia.mjs
+@@ -484,7 +484,8 @@ const main = async () => {
+   for (const artifactName of names) {
+     const assetName = `${artifactName}-${releaseTag}.tar.gz`;
+     const extractDir = path.join(artifactsDir, artifactName);
+-    const downloadUrl = `https://github.com/${repo}/releases/download/${releaseTag}/${assetName}`;
++    const baseUrl = process.env.SKIA_DOWNLOAD_BASE_URL || `https://github.com/${repo}/releases/download`;
++    const downloadUrl = `${baseUrl}/${releaseTag}/${assetName}`;
+ 
+     console.log(`   Downloading ${assetName}...`);
+     try {

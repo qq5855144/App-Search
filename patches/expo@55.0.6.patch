@@ -1,0 +1,22 @@
+diff --git a/bundledNativeModules.json b/bundledNativeModules.json
+index e2b8941923b274b1c5c9bda2269d28cf574aff7f..355deae878b654e1e1d9db114ee88c1e7e504276 100644
+--- a/bundledNativeModules.json
++++ b/bundledNativeModules.json
+@@ -19,7 +19,7 @@
+   "expo-apple-authentication": "~55.0.8",
+   "expo-application": "~55.0.9",
+   "expo-asset": "~55.0.8",
+-  "expo-audio": "~55.0.8",
++  "expo-audio": "55.0.6",
+   "expo-auth-session": "~55.0.8",
+   "expo-background-fetch": "~55.0.9",
+   "expo-background-task": "~55.0.9",
+@@ -90,7 +90,7 @@
+   "expo-tracking-transparency": "~55.0.8",
+   "expo-updates": "~55.0.13",
+   "expo-video-thumbnails": "~55.0.10",
+-  "expo-video": "~55.0.10",
++  "expo-video": "55.0.5",
+   "expo-web-browser": "~55.0.9",
+   "jest-expo": "~55.0.9",
+   "lottie-react-native": "~7.3.4",
