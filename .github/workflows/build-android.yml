@@ -45,6 +45,10 @@ jobs:
           EXPO_PUBLIC_APP_ID: ${{ secrets.EXPO_PUBLIC_APP_ID || '' }}
           CI: true
 
+      - name: Apply arm64-v8a only ABI filter
+        run: |
+          sed -i '/defaultConfig {/a\        ndk { abiFilters "arm64-v8a" }' android/app/build.gradle
+
       - name: Generate release keystore
         run: |
           keytool -genkey -v \
