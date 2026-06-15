@@ -47,7 +47,44 @@ jobs:
 
       - name: Apply arm64-v8a only ABI filter
         run: |
-          sed -i '/defaultConfig {/a\        ndk { abiFilters "arm64-v8a" }' android/app/build.gradle
+          python3 << 'PYEOF'
+          import re
+
+          path = 'android/app/build.gradle'
+          with open(path, 'r') as f:
+              content = f.read()
+
+          changes = []
+
+          # 1. Add ndk.abiFilters in defaultConfig (filters NDK builds + prebuilt .so from AARs)
+          if "ndk {" not in content:
+              content = content.replace(
+                  'defaultConfig {',
+                  'defaultConfig {\n        ndk { abiFilters "arm64-v8a" }'
+              )
+              changes.append("ndk.abiFilters in defaultConfig")
+
+          # 2. Add packagingOptions to strip non-arm64 .so files at packaging stage
+          if "exclude 'lib/" not in content:
+              packaging = """
+              packagingOptions {
+                  jniLibs { useLegacyPackaging = true }
+                  exclude 'lib/armeabi-v7a/**'
+                  exclude 'lib/x86/**'
+                  exclude 'lib/x86_64/**'
+              }"""
+              content = content.replace('android {', 'android {' + packaging)
+              changes.append("packagingOptions exclusions")
+
+          with open(path, 'w') as f:
+              f.write(content)
+
+          print(f"Applied: {', '.join(changes)}")
+          print("\nVerification:")
+          for line in content.split('\n'):
+              if any(kw in line for kw in ['abiFilter', 'ndk', 'exclude lib/', 'packagingOptions']):
+                  print(f"  {line.strip()}")
+          PYEOF
 
       - name: Generate release keystore
         run: |
