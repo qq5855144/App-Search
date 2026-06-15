@@ -1,238 +1,175 @@
-import { Platform } from 'react-native'
+import { Platform } from 'react-native';
+import type { AppItem, DownloadRecord, FavoriteItem } from '@/types';
 
-// Web 端：GitHub Pages 不支持 OPFS 所需的跨域隔离头，SQLite 不可用
-// expo-sqlite 改为动态 import，避免模块初始化时的任何潜在问题
-// 所有函数返回空结果，不抛出异常，保证 Web 端正常渲染
-const IS_WEB = Platform.OS === 'web'
+const IS_WEB = Platform.OS === 'web';
 
-// 将 dbPromise 挂载到 globalThis，防止热更新后重复初始化
-const g = globalThis as any
+// ─── Web 端：用 localStorage 存储，无任何 native 依赖 ─────────────────────
+function webGet<T>(key: string, fallback: T): T {
+  try {
+    if (typeof localStorage === 'undefined') return fallback;
+    const v = localStorage.getItem(key);
+    return v ? JSON.parse(v) : fallback;
+  } catch { return fallback; }
+}
+function webSet(key: string, value: unknown) {
+  try { if (typeof localStorage !== 'undefined') localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
+}
 
+// ─── Native 端：懒加载 SQLite ────────────────────────────────────────────────
+const g = globalThis as any;
 function initDb() {
-  if (IS_WEB) return Promise.resolve(null)
-  if (!g.__openappstoreDb) {
-    g.__openappstoreDb = import('expo-sqlite').then(({ openDatabaseAsync }) =>
+  if (IS_WEB) return Promise.resolve(null);
+  if (!g.__oas_db) {
+    g.__oas_db = import('expo-sqlite').then(({ openDatabaseAsync }) =>
       openDatabaseAsync('openappstore.db')
     ).then(async (db) => {
       await db.execAsync(`
         CREATE TABLE IF NOT EXISTS favorites (
-          id TEXT PRIMARY KEY,
-          app_id INTEGER NOT NULL,
-          app_name TEXT NOT NULL,
-          owner TEXT NOT NULL,
-          repo TEXT NOT NULL,
-          avatar_url TEXT,
-          description TEXT,
-          stars INTEGER DEFAULT 0,
-          language TEXT,
-          platforms TEXT,
-          tags TEXT,
-          group_name TEXT DEFAULT '全部收藏',
-          added_at TEXT NOT NULL
+          id TEXT PRIMARY KEY, app_id INTEGER NOT NULL, app_name TEXT NOT NULL,
+          owner TEXT NOT NULL, repo TEXT NOT NULL, avatar_url TEXT,
+          description TEXT, stars INTEGER DEFAULT 0, language TEXT,
+          platforms TEXT, tags TEXT, group_name TEXT DEFAULT '全部收藏', added_at TEXT NOT NULL
         );
-
         CREATE TABLE IF NOT EXISTS download_history (
-          id TEXT PRIMARY KEY,
-          app_id INTEGER NOT NULL,
-          app_name TEXT NOT NULL,
-          owner TEXT NOT NULL,
-          repo TEXT NOT NULL,
-          avatar_url TEXT,
-          version TEXT,
-          download_time TEXT NOT NULL,
-          file_size INTEGER DEFAULT 0,
-          html_url TEXT
+          id TEXT PRIMARY KEY, app_id INTEGER NOT NULL, app_name TEXT NOT NULL,
+          owner TEXT NOT NULL, repo TEXT NOT NULL, avatar_url TEXT,
+          version TEXT, download_time TEXT NOT NULL, file_size INTEGER DEFAULT 0, html_url TEXT
         );
-
         CREATE TABLE IF NOT EXISTS search_history (
-          id TEXT PRIMARY KEY,
-          keyword TEXT NOT NULL UNIQUE,
-          searched_at TEXT NOT NULL
+          id TEXT PRIMARY KEY, keyword TEXT NOT NULL UNIQUE, searched_at TEXT NOT NULL
         );
-
-        CREATE INDEX IF NOT EXISTS idx_favorites_group ON favorites(group_name);
-      `)
-      return db
-    }).catch((err: unknown) => {
-      g.__openappstoreDb = null
-      console.warn('[database] SQLite init failed:', err)
-      return null
-    })
+      `);
+      return db;
+    });
   }
-  return g.__openappstoreDb as Promise<any>
+  return g.__oas_db;
 }
 
-async function getDb(): Promise<any | null> {
-  return initDb()
-}
-
-export async function addFavorite(item: {
-  app_id: number
-  app_name: string
-  owner: string
-  repo: string
-  avatar_url: string
-  description: string | null
-  stars: number
-  language: string | null
-  platforms: string[]
-  group_name?: string
-}): Promise<void> {
-  const db = await getDb()
-  if (!db) return
-  const id = `${item.app_id}_${Date.now()}`
+// ─── 收藏 ────────────────────────────────────────────────────────────────────
+export async function addFavorite(app: AppItem): Promise<void> {
+  if (IS_WEB) {
+    const favs = webGet<FavoriteItem[]>('oas_favorites', []);
+    if (favs.find((f) => f.app_id === app.id)) return;
+    favs.unshift({
+      id: String(Date.now()), app_id: app.id, app_name: app.name,
+      owner: app.owner, repo: app.repo, avatar_url: app.avatar_url,
+      description: app.description, stars: app.stars, language: app.language,
+      platforms: app.platforms, tags: app.topics || [],
+      group_name: '全部收藏', added_at: new Date().toISOString(),
+    });
+    webSet('oas_favorites', favs);
+    return;
+  }
+  const db = await initDb();
   await db.runAsync(
-    `INSERT OR REPLACE INTO favorites (id, app_id, app_name, owner, repo, avatar_url, description, stars, language, platforms, tags, group_name, added_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    id,
-    item.app_id,
-    item.app_name,
-    item.owner,
-    item.repo,
-    item.avatar_url,
-    item.description ?? '',
-    item.stars,
-    item.language ?? '',
-    JSON.stringify(item.platforms),
-    '[]',
-    item.group_name ?? '全部收藏',
-    new Date().toISOString()
-  )
+    `INSERT OR REPLACE INTO favorites (id,app_id,app_name,owner,repo,avatar_url,description,stars,language,platforms,tags,added_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [String(Date.now()), app.id, app.name, app.owner, app.repo, app.avatar_url,
+     app.description, app.stars, app.language, JSON.stringify(app.platforms),
+     JSON.stringify(app.topics || []), new Date().toISOString()]
+  );
 }
 
 export async function removeFavorite(appId: number): Promise<void> {
-  const db = await getDb()
-  if (!db) return
-  await db.runAsync('DELETE FROM favorites WHERE app_id = ?', appId)
+  if (IS_WEB) {
+    const favs = webGet<FavoriteItem[]>('oas_favorites', []).filter((f) => f.app_id !== appId);
+    webSet('oas_favorites', favs);
+    return;
+  }
+  const db = await initDb();
+  await db.runAsync('DELETE FROM favorites WHERE app_id = ?', [appId]);
 }
 
 export async function isFavorite(appId: number): Promise<boolean> {
-  const db = await getDb()
-  if (!db) return false
-  const result = await db.getFirstAsync('SELECT COUNT(*) as count FROM favorites WHERE app_id = ?', appId) as { count: number } | null
-  return (result?.count ?? 0) > 0
-}
-
-export async function getFavorites(groupName?: string): Promise<any[]> {
-  const db = await getDb()
-  if (!db) return []
-  if (groupName && groupName !== '全部收藏') {
-    return db.getAllAsync('SELECT * FROM favorites WHERE group_name = ? ORDER BY added_at DESC', groupName)
+  if (IS_WEB) {
+    return webGet<FavoriteItem[]>('oas_favorites', []).some((f) => f.app_id === appId);
   }
-  return db.getAllAsync('SELECT * FROM favorites ORDER BY added_at DESC')
+  const db = await initDb();
+  const row = await db.getFirstAsync<{ cnt: number }>(
+    'SELECT COUNT(*) as cnt FROM favorites WHERE app_id = ?', [appId]
+  );
+  return (row?.cnt ?? 0) > 0;
 }
 
-export async function getFavoriteGroups(): Promise<string[]> {
-  const db = await getDb()
-  if (!db) return ['全部收藏']
-  const rows = await db.getAllAsync('SELECT DISTINCT group_name FROM favorites') as { group_name: string }[]
-  const groups = rows.map((r) => r.group_name)
-  if (!groups.includes('全部收藏')) groups.unshift('全部收藏')
-  return groups
+export async function getFavorites(): Promise<FavoriteItem[]> {
+  if (IS_WEB) {
+    return webGet<FavoriteItem[]>('oas_favorites', []);
+  }
+  const db = await initDb();
+  const rows = await db.getAllAsync<any>('SELECT * FROM favorites ORDER BY added_at DESC');
+  return rows.map((r) => ({
+    ...r,
+    platforms: tryParse(r.platforms, []),
+    tags: tryParse(r.tags, []),
+  }));
 }
 
-export async function updateFavoriteGroup(appId: number, groupName: string): Promise<void> {
-  const db = await getDb()
-  if (!db) return
-  await db.runAsync('UPDATE favorites SET group_name = ? WHERE app_id = ?', groupName, appId)
+export async function getFavoriteStats(): Promise<{ total: number }> {
+  if (IS_WEB) {
+    return { total: webGet<FavoriteItem[]>('oas_favorites', []).length };
+  }
+  const db = await initDb();
+  const row = await db.getFirstAsync<{ cnt: number }>('SELECT COUNT(*) as cnt FROM favorites');
+  return { total: row?.cnt ?? 0 };
 }
 
-export async function addDownloadRecord(item: {
-  app_id: number
-  app_name: string
-  owner: string
-  repo: string
-  avatar_url: string
-  version: string
-  file_size?: number
-  html_url: string
-}): Promise<void> {
-  const db = await getDb()
-  if (!db) return
-  const id = `${item.app_id}_${Date.now()}`
+// ─── 下载记录 ───────────────────────────────────────────────────────────────
+export async function addDownloadRecord(record: Omit<DownloadRecord, 'id'>): Promise<void> {
+  if (IS_WEB) {
+    const list = webGet<DownloadRecord[]>('oas_downloads', []);
+    list.unshift({ ...record, id: String(Date.now()) });
+    webSet('oas_downloads', list.slice(0, 100));
+    return;
+  }
+  const db = await initDb();
   await db.runAsync(
-    `INSERT INTO download_history (id, app_id, app_name, owner, repo, avatar_url, version, download_time, file_size, html_url)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    id,
-    item.app_id,
-    item.app_name,
-    item.owner,
-    item.repo,
-    item.avatar_url,
-    item.version,
-    new Date().toISOString(),
-    item.file_size ?? 0,
-    item.html_url
-  )
+    `INSERT OR REPLACE INTO download_history (id,app_id,app_name,owner,repo,avatar_url,version,download_time,file_size,html_url)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    [String(Date.now()), record.app_id, record.app_name, record.owner, record.repo,
+     record.avatar_url, record.version, record.download_time, record.file_size, record.html_url]
+  );
 }
 
-export async function getDownloadHistory(): Promise<any[]> {
-  const db = await getDb()
-  if (!db) return []
-  return db.getAllAsync('SELECT * FROM download_history ORDER BY download_time DESC')
+export async function getDownloadHistory(): Promise<DownloadRecord[]> {
+  if (IS_WEB) return webGet<DownloadRecord[]>('oas_downloads', []);
+  const db = await initDb();
+  return db.getAllAsync<DownloadRecord>('SELECT * FROM download_history ORDER BY download_time DESC LIMIT 100');
 }
 
 export async function clearDownloadHistory(): Promise<void> {
-  const db = await getDb()
-  if (!db) return
-  await db.runAsync('DELETE FROM download_history')
+  if (IS_WEB) { webSet('oas_downloads', []); return; }
+  const db = await initDb();
+  await db.runAsync('DELETE FROM download_history');
 }
 
+// ─── 搜索历史 ───────────────────────────────────────────────────────────────
 export async function addSearchHistory(keyword: string): Promise<void> {
-  const db = await getDb()
-  if (!db) return
-  const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`
-  await db.runAsync(
-    `INSERT OR REPLACE INTO search_history (id, keyword, searched_at) VALUES (?, ?, ?)`,
-    id,
-    keyword,
-    new Date().toISOString()
-  )
-  const rows = await db.getAllAsync('SELECT id FROM search_history ORDER BY searched_at DESC LIMIT 100 OFFSET 20') as { id: string }[]
-  for (const row of rows) {
-    await db.runAsync('DELETE FROM search_history WHERE id = ?', row.id)
+  if (IS_WEB) {
+    const list = webGet<string[]>('oas_search_history', []);
+    const filtered = list.filter((k) => k !== keyword);
+    webSet('oas_search_history', [keyword, ...filtered].slice(0, 20));
+    return;
   }
+  const db = await initDb();
+  await db.runAsync(
+    `INSERT OR REPLACE INTO search_history (id,keyword,searched_at) VALUES (?,?,?)`,
+    [keyword, keyword, new Date().toISOString()]
+  );
 }
 
 export async function getSearchHistory(): Promise<string[]> {
-  const db = await getDb()
-  if (!db) return []
-  const rows = await db.getAllAsync('SELECT keyword FROM search_history ORDER BY searched_at DESC LIMIT 20') as { keyword: string }[]
-  return rows.map((r) => r.keyword)
+  if (IS_WEB) return webGet<string[]>('oas_search_history', []);
+  const db = await initDb();
+  const rows = await db.getAllAsync<{ keyword: string }>('SELECT keyword FROM search_history ORDER BY searched_at DESC LIMIT 20');
+  return rows.map((r) => r.keyword);
 }
 
 export async function clearSearchHistory(): Promise<void> {
-  const db = await getDb()
-  if (!db) return
-  await db.runAsync('DELETE FROM search_history')
+  if (IS_WEB) { webSet('oas_search_history', []); return; }
+  const db = await initDb();
+  await db.runAsync('DELETE FROM search_history');
 }
 
-export async function getFavoriteStats(): Promise<{ total: number; byGroup: Record<string, number>; byPlatform: Record<string, number> }> {
-  const db = await getDb()
-  if (!db) return { total: 0, byGroup: {}, byPlatform: {} }
-  const totalResult = await db.getFirstAsync('SELECT COUNT(*) as count FROM favorites') as { count: number } | null
-  const total = totalResult?.count ?? 0
-
-  const groupRows = await db.getAllAsync(
-    'SELECT group_name, COUNT(*) as count FROM favorites GROUP BY group_name'
-  ) as { group_name: string; count: number }[]
-  const byGroup: Record<string, number> = {}
-  for (const row of groupRows) {
-    byGroup[row.group_name] = row.count
-  }
-
-  const allFavorites = await db.getAllAsync('SELECT platforms FROM favorites') as { platforms: string }[]
-  const byPlatform: Record<string, number> = {}
-  for (const fav of allFavorites) {
-    try {
-      const platforms = JSON.parse(fav.platforms || '[]') as string[]
-      for (const p of platforms) {
-        byPlatform[p] = (byPlatform[p] ?? 0) + 1
-      }
-    } catch {
-      // ignore parse error
-    }
-  }
-
-  return { total, byGroup, byPlatform }
+function tryParse(v: any, fallback: any) {
+  try { return typeof v === 'string' ? JSON.parse(v) : v ?? fallback; } catch { return fallback; }
 }
