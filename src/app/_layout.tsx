@@ -82,7 +82,7 @@ export default function RootLayout() {
         <SafeAreaProvider style={{ flex: 1 }}>
           <DownloadProvider>
             <StatusBar style="dark" backgroundColor="transparent" translucent />
-            <Stack screenOptions={{ headerShown: false }}>
+            <Stack screenOptions={{ headerShown: false, animation: 'none' }}>
               <Stack.Screen name="index" />
               <Stack.Screen name="(app)" />
               <Stack.Screen name="(auth)" />
