@@ -1,5 +1,6 @@
 import { Stack } from 'expo-router';
 import { PortalHost } from '@rn-primitives/portal';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect } from 'react';
@@ -50,6 +51,13 @@ function MinimalFallback() {
   );
 }
 
+// Native 端保留 GestureHandlerRootView；Web 端用 plain View 避免潜在兼容性问题
+const RootWrapper = Platform.OS === 'web'
+  ? ({ children }: { children: React.ReactNode }) => <View style={{ flex: 1 }}>{children}</View>
+  : ({ children }: { children: React.ReactNode }) => (
+      <GestureHandlerRootView style={{ flex: 1 }}>{children}</GestureHandlerRootView>
+    );
+
 export default function RootLayout() {
   const [ready, setReady] = React.useState(false);
   const [fatalError, setFatalError] = React.useState<string | null>(null);
@@ -91,17 +99,17 @@ export default function RootLayout() {
 
   return (
     <ErrorBoundary>
-      <SafeAreaProvider>
-        <DownloadProvider>
-          <StatusBar style="dark" backgroundColor="transparent" translucent />
-          <View style={{ flex: 1 }}>
+      <RootWrapper>
+        <SafeAreaProvider>
+          <DownloadProvider>
+            <StatusBar style="dark" backgroundColor="transparent" translucent />
             <Stack screenOptions={{ headerShown: false }}>
               <Stack.Screen name="(app)" />
             </Stack>
             <PortalHost />
-          </View>
-        </DownloadProvider>
-      </SafeAreaProvider>
+          </DownloadProvider>
+        </SafeAreaProvider>
+      </RootWrapper>
     </ErrorBoundary>
   );
 }
