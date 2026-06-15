@@ -1,3 +1,4 @@
+import React from 'react';
 import { View, Text } from 'react-native';
 import { PackageOpen } from 'lucide-react-native';
 

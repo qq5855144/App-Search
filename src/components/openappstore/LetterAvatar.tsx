@@ -1,3 +1,4 @@
+import React from 'react';
 import { View, Text } from 'react-native';
 
 const COLORS = ['#1677FF', '#00B96B', '#FF4D4F', '#FA8C16', '#722ED1', '#EB2F96'];

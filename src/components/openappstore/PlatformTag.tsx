@@ -1,3 +1,4 @@
+import React from 'react';
 import { View, Text } from 'react-native';
 
 const PLATFORM_COLORS: Record<string, string> = {
