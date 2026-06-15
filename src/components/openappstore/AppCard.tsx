@@ -33,7 +33,7 @@ export default function AppCard({ app }: AppCardProps) {
       }}
     >
       <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-        <AppIcon owner={app.owner} repo={app.repo} url={app.avatar_url} name={app.name} size={56} />
+        <AppIcon owner={app.owner} repo={app.repo} url={app.avatar_url} name={app.name} size={72} />
 
         {/* 应用信息 */}
         <View style={{ flex: 1, marginLeft: 12, gap: 4 }}>
