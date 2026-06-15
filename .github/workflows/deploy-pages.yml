@@ -37,15 +37,27 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
+      # Secret 非空时追加到 .env 覆盖默认值；未配置时保留仓库已提交的 .env 原始值
+      - name: Override .env from Secrets (optional)
+        env:
+          _URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          _KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          _AID: ${{ secrets.EXPO_PUBLIC_APP_ID }}
+        run: |
+          [ -n "$_URL" ] && echo "EXPO_PUBLIC_SUPABASE_URL=$_URL" >> .env || true
+          [ -n "$_KEY" ] && echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=$_KEY" >> .env || true
+          [ -n "$_AID" ] && echo "EXPO_PUBLIC_APP_ID=$_AID"          >> .env || true
+
       - name: Export web (Expo → dist/)
         run: npx expo export --platform web
         env:
-          # 优先使用 GitHub Secrets；未配置时自动读取仓库中已提交的 .env
-          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL || '' }}
-          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY || '' }}
-          EXPO_PUBLIC_APP_ID: ${{ secrets.EXPO_PUBLIC_APP_ID || '' }}
-          # expo export 交互提示抑制
           CI: true
+
+      # GitHub Pages 是纯静态托管，不支持服务端路由重写。
+      # 将 index.html 复制为 404.html，使任意路径刷新/直接访问时
+      # 都由 SPA 自身接管路由，而不是返回 GitHub 的默认 404 页面。
+      - name: Add 404.html for SPA routing fallback
+        run: cp dist/index.html dist/404.html
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
