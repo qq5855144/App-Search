@@ -187,7 +187,7 @@ export default function HomeTab() {
   );
 
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={['top']}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#F5F6F8' }} edges={['top']}>
       <FlatList
         ref={flatListRef}
         data={apps}
