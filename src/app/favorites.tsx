@@ -3,8 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, Trash2, Download, Share2 } from 'lucide-react-native';
-import * as FileSystem from 'expo-file-system/legacy';
-import * as Sharing from 'expo-sharing';
+import { Platform } from 'react-native';
 import { getFavorites, getFavoriteGroups, removeFavorite } from '@/lib/database';
 import AppIcon from '@/components/openappstore/AppIcon';
 import PlatformTag from '@/components/openappstore/PlatformTag';
@@ -61,7 +60,11 @@ export default function FavoritesScreen() {
         a.href = url; a.download = filename; a.click();
         URL.revokeObjectURL(url);
       } else {
-        // 原生平台：写文件后调系统分享
+        // 原生平台：动态导入 expo-file-system + expo-sharing（避免 web bundle 污染）
+        const [FileSystem, Sharing] = await Promise.all([
+          import('expo-file-system/legacy'),
+          import('expo-sharing'),
+        ]);
         const fileUri = (FileSystem.documentDirectory ?? '') + filename;
         await FileSystem.writeAsStringAsync(fileUri, jsonStr, { encoding: FileSystem.EncodingType.UTF8 });
         const available = await Sharing.isAvailableAsync();

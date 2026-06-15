@@ -2,7 +2,6 @@ import { View, Text, Pressable, FlatList, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import * as Sharing from 'expo-sharing';
 import { useDownload } from '@/ctx/DownloadContext';
 import { formatSpeed, formatBytes } from '@/lib/downloadManager';
 import type { DownloadTask } from '@/lib/downloadManager';
@@ -48,6 +47,8 @@ function DownloadItem({ task }: { task: DownloadTask }) {
       const mimeType = isApk
         ? 'application/vnd.android.package-archive'
         : 'application/octet-stream';
+      // 动态导入，避免 web bundle 包含 expo-sharing
+      const Sharing = await import('expo-sharing');
       const available = await Sharing.isAvailableAsync();
       if (available) {
         await Sharing.shareAsync(task.localUri, { mimeType, dialogTitle: '打开文件' });

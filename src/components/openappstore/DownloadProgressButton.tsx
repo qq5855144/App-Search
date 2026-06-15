@@ -11,7 +11,6 @@ import { View, Text, Pressable, Platform } from 'react-native';
 import { useEffect, useRef, useState } from 'react';
 import Svg, { Circle } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
-import * as Sharing from 'expo-sharing';
 import { useDownload } from '@/ctx/DownloadContext';
 import { formatSpeed, getMimeType, isInstallerFile } from '@/lib/downloadManager';
 import type { DownloadTask } from '@/lib/downloadManager';
@@ -50,6 +49,8 @@ async function openLocalFile(
   if (!localUri) return { ok: false, error: '文件路径无效' };
   try {
     const mimeType = getMimeType(filename);
+    // 动态导入，避免 web bundle 包含 expo-sharing
+    const Sharing = await import('expo-sharing');
     const available = await Sharing.isAvailableAsync();
     if (!available) return { ok: false, error: '当前设备不支持文件分享/打开' };
     await Sharing.shareAsync(localUri, {
