@@ -37,12 +37,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Secret 非空时追加到 .env 覆盖默认值；未配置时保留仓库已提交的 .env 原始值
+      - name: Override .env from Secrets (optional)
+        env:
+          _URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          _KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          _AID: ${{ secrets.EXPO_PUBLIC_APP_ID }}
+        run: |
+          [ -n "$_URL" ] && echo "EXPO_PUBLIC_SUPABASE_URL=$_URL" >> .env || true
+          [ -n "$_KEY" ] && echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=$_KEY" >> .env || true
+          [ -n "$_AID" ] && echo "EXPO_PUBLIC_APP_ID=$_AID"          >> .env || true
+
       - name: Expo prebuild (generate android/)
         run: npx expo prebuild --platform android --no-install
         env:
-          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL || '' }}
-          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY || '' }}
-          EXPO_PUBLIC_APP_ID: ${{ secrets.EXPO_PUBLIC_APP_ID || '' }}
           CI: true
 
       - name: Generate release keystore
@@ -67,11 +75,6 @@ jobs:
             -Pandroid.injected.signing.store.password=android123 \
             -Pandroid.injected.signing.key.alias=release \
             -Pandroid.injected.signing.key.password=android123
-        env:
-          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL || '' }}
-          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY || '' }}
-          EXPO_PUBLIC_APP_ID: ${{ secrets.EXPO_PUBLIC_APP_ID || '' }}
-
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:

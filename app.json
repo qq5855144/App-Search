@@ -2,7 +2,7 @@
   "expo": {
     "name": "开源应用搜索",
     "slug": "open-app-search",
-    "version": "1.0.59",
+    "version": "1.0.60",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",

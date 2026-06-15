@@ -37,14 +37,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Secret 非空时追加到 .env 覆盖默认值；未配置时保留仓库已提交的 .env 原始值
+      - name: Override .env from Secrets (optional)
+        env:
+          _URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          _KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          _AID: ${{ secrets.EXPO_PUBLIC_APP_ID }}
+        run: |
+          [ -n "$_URL" ] && echo "EXPO_PUBLIC_SUPABASE_URL=$_URL" >> .env || true
+          [ -n "$_KEY" ] && echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=$_KEY" >> .env || true
+          [ -n "$_AID" ] && echo "EXPO_PUBLIC_APP_ID=$_AID"          >> .env || true
+
       - name: Export web (Expo → dist/)
         run: npx expo export --platform web
         env:
-          # 优先使用 GitHub Secrets；未配置时自动读取仓库中已提交的 .env
-          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL || '' }}
-          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY || '' }}
-          EXPO_PUBLIC_APP_ID: ${{ secrets.EXPO_PUBLIC_APP_ID || '' }}
-          # expo export 交互提示抑制
           CI: true
 
       - name: Upload Pages artifact
