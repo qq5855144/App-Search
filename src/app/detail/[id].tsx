@@ -21,20 +21,43 @@ function formatCount(n: number) {
   return String(n);
 }
 
+/**
+ * 预处理 Markdown：
+ * 1. 移除 HTML 块（整行 HTML 标签、多行 HTML 元素）
+ * 2. 移除图片徽章 ![alt](url) — react-native-marked 不渲染图片，会显示 !alt
+ * 3. 清理连续空行
+ */
+function preprocessMarkdown(md: string): string {
+  return md
+    // 移除完整的多行 HTML 块（如 <a>...<img>...</a>）
+    .replace(/<[a-zA-Z][^>]*>[\s\S]*?<\/[a-zA-Z]+>/g, '')
+    // 移除自闭合 HTML 标签（<img ... />）
+    .replace(/<[a-zA-Z][^>]*\/>/g, '')
+    // 移除剩余的单行 HTML 开闭标签
+    .replace(/<\/?[a-zA-Z][^>]*>/g, '')
+    // 移除图片 markdown ![alt](url)，彻底去掉（含徽章）
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    // 清理连续 3 个以上空行 → 保留最多 2 个
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /** 安全渲染 Markdown，兼容 Web/Native */
 function MarkdownSection({ content }: { content: string }) {
   if (!content) return null;
-  // Web 平台：直接用 HTML 渲染，避免 react-native-marked 在 web 上的渲染异常
+  const cleaned = preprocessMarkdown(content);
+  if (!cleaned) return null;
+
+  // Web 平台：直接用 HTML 渲染
   if (Platform.OS === 'web') {
-    // 简单的 Markdown → HTML 转换（段落、标题、代码块、链接）
-    const html = content
+    const html = cleaned
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/^### (.+)$/gm, '<h3 style="font-size:14px;font-weight:700;margin:12px 0 4px;color:#1A1A1A">$1</h3>')
       .replace(/^## (.+)$/gm, '<h2 style="font-size:16px;font-weight:700;margin:14px 0 6px;color:#1A1A1A">$1</h2>')
       .replace(/^# (.+)$/gm, '<h1 style="font-size:18px;font-weight:700;margin:16px 0 8px;color:#1A1A1A">$1</h1>')
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.+?)\*/g, '<em>$1</em>')
-      .replace(/`(.+?)`/g, '<code style="background:#F0F0F0;border-radius:3px;padding:1px 4px;font-family:monospace;font-size:12px">$1</code>')
+      .replace(/`(.+?)`/g, '<code style="background:#F0F0F0;border-radius:3px;padding:1px 4px;font-size:12px">$1</code>')
       .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" style="color:#1677FF">$1</a>')
       .replace(/\n\n/g, '</p><p style="margin:0 0 8px;color:#555;font-size:14px;line-height:22px">')
       .replace(/\n/g, '<br/>');
@@ -51,12 +74,13 @@ function MarkdownSection({ content }: { content: string }) {
       </View>
     );
   }
+
   // Native 平台：使用 react-native-marked
   return (
     <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4 }}>
       <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A', marginBottom: 10 }}>README</Text>
       <Marked
-        value={content}
+        value={cleaned}
         flatListProps={{ scrollEnabled: false }}
         styles={{
           text: { fontSize: 14, color: '#555', lineHeight: 22 },
