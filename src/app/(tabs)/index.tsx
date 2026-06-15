@@ -9,14 +9,14 @@ import AppCard from '@/components/openappstore/AppCard';
 import SkeletonCard from '@/components/openappstore/SkeletonCard';
 
 const CATEGORIES = [
-  { key: 'latest',  label: '最新',    icon: 'flash-outline',           q: 'mobile app stars:>500' },
-  { key: 'rank',    label: '排行',    icon: 'trophy-outline',          q: 'mobile app stars:>5000' },
-  { key: 'android', label: 'Android', icon: 'logo-android',            q: 'android app stars:>1000' },
-  { key: 'ios',     label: 'iOS',     icon: 'logo-apple',              q: 'ios app stars:>500' },
-  { key: 'windows', label: 'Windows', icon: 'logo-windows',            q: 'windows app stars:>500' },
-  { key: 'dev',     label: '开发',    icon: 'hammer-outline',          q: 'developer tools stars:>1000' },
-  { key: 'media',   label: '媒体',    icon: 'musical-notes-outline',   q: 'media player stars:>500' },
-  { key: 'game',    label: '游戏',    icon: 'game-controller-outline',  q: 'game stars:>500' },
+  { key: 'latest',  label: '最新',    icon: 'flash',            color: '#FF6B35', bg: '#FFF3E0', q: 'mobile app stars:>500' },
+  { key: 'rank',    label: '排行',    icon: 'trophy',           color: '#1677FF', bg: '#EBF3FF', q: 'mobile app stars:>5000' },
+  { key: 'android', label: 'Android', icon: 'logo-android',    color: '#3DDC84', bg: '#E8F5E9', q: 'android app stars:>1000' },
+  { key: 'ios',     label: 'iOS',     icon: 'logo-apple',      color: '#1A1A1A', bg: '#F5F5F7', q: 'ios app stars:>500' },
+  { key: 'windows', label: 'Windows', icon: 'logo-windows',    color: '#00A4EF', bg: '#E3F2FD', q: 'windows app stars:>500' },
+  { key: 'dev',     label: '开发',    icon: 'hammer',          color: '#9C27B0', bg: '#F3E5F5', q: 'developer tools stars:>1000' },
+  { key: 'media',   label: '媒体',    icon: 'musical-notes',   color: '#E91E63', bg: '#FCE4EC', q: 'media player stars:>500' },
+  { key: 'game',    label: '游戏',    icon: 'game-controller',  color: '#FF5722', bg: '#FBE9E7', q: 'game stars:>500' },
 ] as const;
 
 export default function HomeTab() {
@@ -76,39 +76,53 @@ export default function HomeTab() {
         ListHeaderComponent={
           <View>
             {/* 顶部搜索栏 */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', padding: 12, gap: 8 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingTop: 8, paddingBottom: 4, gap: 8 }}>
               <Pressable
                 onPress={() => router.push('/(tabs)/search' as any)}
                 style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
-                  borderRadius: 24, paddingHorizontal: 14, paddingVertical: 10, gap: 6 }}
+                  borderRadius: 24, paddingHorizontal: 14, paddingVertical: 11, gap: 6,
+                  boxShadow: [{ offsetX: 0, offsetY: 1, blurRadius: 3, color: 'rgba(0,0,0,0.06)' }] }}
               >
-                <Ionicons name="search-outline" size={16} color="#AAA" />
-                <Text style={{ color: '#AAA', fontSize: 14 }}>搜索开源应用…</Text>
+                <Ionicons name="search-outline" size={16} color="#AAAAAA" />
+                <Text style={{ color: '#AAAAAA', fontSize: 14 }}>搜索应用、开发工具…</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {}}
+                style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#fff',
+                  alignItems: 'center', justifyContent: 'center',
+                  boxShadow: [{ offsetX: 0, offsetY: 1, blurRadius: 3, color: 'rgba(0,0,0,0.06)' }] }}
+              >
+                <Ionicons name="notifications-outline" size={20} color="#555" />
               </Pressable>
               <Pressable
                 onPress={() => router.push('/(tabs)/profile' as any)}
-                style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: '#EBF3FF',
+                style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#EBF3FF',
                   alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#1677FF' }}
               >
                 <Ionicons name="logo-github" size={20} color="#1677FF" />
               </Pressable>
             </View>
             {/* 分类 2×4 grid */}
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 8, paddingBottom: 8 }}>
-              {CATEGORIES.map((cat) => (
-                <Pressable key={cat.key} onPress={() => onCategoryPress(cat.key)}
-                  style={{ width: '25%', alignItems: 'center', paddingVertical: 8, gap: 4 }}>
-                  <View style={{
-                    width: 50, height: 50, borderRadius: 14, backgroundColor: '#fff',
-                    alignItems: 'center', justifyContent: 'center',
-                    borderWidth: activeCategory === cat.key ? 2 : 0,
-                    borderColor: '#1677FF',
-                  }}>
-                    <Ionicons name={cat.icon as any} size={22} color={activeCategory === cat.key ? '#1677FF' : '#555'} />
-                  </View>
-                  <Text style={{ fontSize: 11, color: activeCategory === cat.key ? '#1677FF' : '#666' }}>{cat.label}</Text>
-                </Pressable>
-              ))}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 4, paddingVertical: 8 }}>
+              {CATEGORIES.map((cat) => {
+                const isActive = activeCategory === cat.key;
+                return (
+                  <Pressable key={cat.key} onPress={() => onCategoryPress(cat.key)}
+                    style={{ width: '25%', alignItems: 'center', paddingVertical: 8, gap: 6 }}>
+                    <View style={{
+                      width: 54, height: 54, borderRadius: 16, backgroundColor: cat.bg,
+                      alignItems: 'center', justifyContent: 'center',
+                      borderWidth: isActive ? 2.5 : 0,
+                      borderColor: cat.color,
+                    }}>
+                      <Ionicons name={cat.icon as any} size={24} color={cat.color} />
+                    </View>
+                    <Text style={{ fontSize: 12, color: isActive ? cat.color : '#555', fontWeight: isActive ? '600' : '400' }}>
+                      {cat.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
             <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
               <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A' }}>全部应用</Text>
