@@ -79,11 +79,13 @@ export default function RootLayout() {
   return (
     <ErrorBoundary>
       <RootWrapper>
-        <SafeAreaProvider>
+        <SafeAreaProvider style={{ flex: 1 }}>
           <DownloadProvider>
             <StatusBar style="dark" backgroundColor="transparent" translucent />
             <Stack screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="index" />
               <Stack.Screen name="(app)" />
+              <Stack.Screen name="(auth)" />
             </Stack>
             <PortalHost />
           </DownloadProvider>
