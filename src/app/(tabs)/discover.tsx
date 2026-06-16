@@ -4,7 +4,7 @@ import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { searchRepos, enrichAppsInBackground } from '@/lib/github';
-import { clearCache } from '@/lib/cache';
+import { clearAllCache } from '@/lib/cache';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
 import SkeletonCard from '@/components/openappstore/SkeletonCard';
@@ -97,7 +97,7 @@ export default function DiscoverTab() {
   }, [platform, category, sort]);
 
   const handleClearCacheAndReload = async () => {
-    await clearCache();
+    await clearAllCache();
     setPage(1);
     setApps([]);
     loadData(1, false);
