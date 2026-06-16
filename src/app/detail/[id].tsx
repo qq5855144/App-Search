@@ -24,6 +24,10 @@ function formatCount(n: number) {
 
 // ─── 自定义 Renderer：解决 shields.io SVG 徽章不显示的根本问题 ────────────────
 class AppRenderer extends Renderer {
+  constructor() {
+    super(); // 必须调用，初始化基类 Slugger
+  }
+
   // 覆盖 image：使用 expo-image 替代 react-native Image，shields.io 强制 PNG 格式
   image(uri: string, alt?: string, _style?: ImageStyle): ReactNode {
     const key = this.getKey(); // 使用基类 Slugger 生成唯一 key，避免重复 key 渲染异常
@@ -105,9 +109,15 @@ function preprocessMarkdown(md: string): string {
   s = s.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, (_, c) => `\n### ${c.replace(/<[^>]+>/g, '').trim()}\n`);
   s = s.replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, (_, c) => `\n#### ${c.replace(/<[^>]+>/g, '').trim()}\n`);
 
-  // 6. 段落/换行标签 → 空行/换行
+  // 6. 段落/换行标签 → 空行/换行；列表标签 → Markdown 列表语法（保留结构）
   s = s.replace(/<\/p>/gi, '\n');
   s = s.replace(/<br\s*\/?>/gi, '\n');
+  // <ul> / <ol> 前后加空行，<li> 转为 "- " 列表项
+  s = s.replace(/<ul[^>]*>/gi, '\n');
+  s = s.replace(/<\/ul>/gi, '\n');
+  s = s.replace(/<ol[^>]*>/gi, '\n');
+  s = s.replace(/<\/ol>/gi, '\n');
+  s = s.replace(/<li[^>]*>/gi, '- ');
   s = s.replace(/<\/li>/gi, '\n');
 
   // 7. 剥除剩余所有 HTML 标签（保留文字）
@@ -222,7 +232,7 @@ export default function DetailScreen() {
         })).filter((r) => r.assets.length > 0);
         setReleases(installRels);
         if (installRels.length > 0) setExpandedRelease(installRels[0].id);
-        setReadme(md.slice(0, 4000)); // 限制长度避免渲染卡顿
+        setReadme(md.slice(0, 12000)); // 扩大到 12000 字符，覆盖大多数 README
         const f = await isFavorite(detail.id).catch(() => false);
         setFavored(f);
       } catch (e: any) {
