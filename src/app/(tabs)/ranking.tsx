@@ -125,37 +125,44 @@ export default function RankingScreen() {
     const iconUri = item.avatar_url || (item.owner ? `https://github.com/${item.owner}.png` : '');
     const displayName = item.app_name || item.repo || `App #${item.app_id}`;
     const subLine = item.owner && item.repo ? `${item.owner}/${item.repo}` : item.owner || item.repo || '';
+    const scoreColor = rankType === 'download' ? '#1677FF' : rankType === 'favorite' ? '#FF4D88' : '#FF4D4F';
     return (
       <Pressable
-        android_ripple={{ color: '#F0F0F0' }}
+        android_ripple={{ color: '#F5F5F5' }}
         onPress={() => item.owner && item.repo ? router.push(`/detail/${item.owner}/${item.repo}` as any) : undefined}
-        style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, backgroundColor: '#fff', borderBottomWidth: index < items.length - 1 ? 0.5 : 0, borderBottomColor: '#F0F0F0' }}
+        style={{
+          flexDirection: 'row', alignItems: 'center',
+          paddingHorizontal: 14, paddingVertical: 10,
+          borderBottomWidth: index < items.length - 1 ? 0.5 : 0,
+          borderBottomColor: '#F0F0F0',
+          backgroundColor: '#fff',
+        }}
       >
         {/* 排名 */}
-        <View style={{ width: 32, alignItems: 'center' }}>
+        <View style={{ width: 28, alignItems: 'center', marginRight: 8 }}>
           {medal
-            ? <Ionicons name="trophy" size={20} color={medal} />
-            : <Text style={{ fontSize: 15, fontWeight: '600', color: '#AAA' }}>{rank}</Text>}
+            ? <Ionicons name="trophy" size={18} color={medal} />
+            : <Text style={{ fontSize: 14, fontWeight: '700', color: '#CCC' }}>{rank}</Text>}
         </View>
 
-        {/* 图标：有有效 URL 则加载图片，否则字母头像 */}
+        {/* 应用图标 */}
         {hasValidIcon ? (
           <Image
             source={{ uri: iconUri }}
-            style={{ width: 44, height: 44, borderRadius: 10, marginHorizontal: 12, backgroundColor: '#F5F5F5' }}
+            style={{ width: 42, height: 42, borderRadius: 10, backgroundColor: '#F0F0F0', marginRight: 12 }}
             contentFit="cover"
           />
         ) : (
-          <View style={{ marginHorizontal: 12 }}>
-            <LetterAvatar name={displayName} size={44} />
+          <View style={{ marginRight: 12 }}>
+            <LetterAvatar name={displayName} size={42} />
           </View>
         )}
 
         {/* 名称 + 统计 */}
-        <View style={{ flex: 1 }}>
+        <View style={{ flex: 1, gap: 3 }}>
           <Text style={{ fontSize: 15, fontWeight: '600', color: '#1A1A1A' }} numberOfLines={1}>{displayName}</Text>
-          {!!subLine && <Text style={{ fontSize: 12, color: '#888', marginTop: 2 }} numberOfLines={1}>{subLine}</Text>}
-          <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
+          {!!subLine && <Text style={{ fontSize: 11, color: '#AAA' }} numberOfLines={1}>{subLine}</Text>}
+          <View style={{ flexDirection: 'row', gap: 10 }}>
             {item.download_count > 0 && (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
                 <Ionicons name="download-outline" size={11} color="#1677FF" />
@@ -170,15 +177,15 @@ export default function RankingScreen() {
             )}
             {item.view_count > 0 && (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
-                <Ionicons name="eye-outline" size={11} color="#888" />
-                <Text style={{ fontSize: 11, color: '#888' }}>{item.view_count}</Text>
+                <Ionicons name="eye-outline" size={11} color="#AAA" />
+                <Text style={{ fontSize: 11, color: '#AAA' }}>{item.view_count}</Text>
               </View>
             )}
           </View>
         </View>
 
         {/* 热度分 */}
-        <Text style={{ fontSize: 13, fontWeight: '700', color: rankType === 'hot' ? '#FF4D4F' : rankType === 'download' ? '#1677FF' : '#FF4D88' }}>
+        <Text style={{ fontSize: 14, fontWeight: '700', color: scoreColor, marginLeft: 8 }}>
           {item.score > 999 ? `${(item.score / 1000).toFixed(1)}k` : item.score}
         </Text>
       </Pressable>
@@ -237,52 +244,60 @@ export default function RankingScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#F5F6F8' }} edges={['top']}>
-      {/* 标题栏 */}
-      <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 }}>
-        <Text style={{ fontSize: 22, fontWeight: '700', color: '#1A1A1A' }}>排行榜</Text>
-      </View>
+      {/* ── 顶部导航栏：标题 + 榜单类型 + 周期 三行紧凑布局 ── */}
+      <View style={{ backgroundColor: '#F5F6F8', paddingTop: 12, paddingBottom: 4 }}>
+        {/* 标题 */}
+        <Text style={{ fontSize: 22, fontWeight: '700', color: '#1A1A1A', paddingHorizontal: 16, marginBottom: 10 }}>排行榜</Text>
 
-      {/* 榜单类型 Tabs */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}
-        style={{ flexShrink: 0, height: 56 }}
-        contentContainerStyle={{ paddingHorizontal: 16, gap: 8, paddingBottom: 8, alignItems: 'center' }}>
-        {RANK_TABS.map((t) => (
-          <Pressable
-            key={t.key}
-            onPress={() => handleTabChange(t.key)}
-            android_ripple={{ color: '#F0F0F0' }}
-            style={{
-              flexDirection: 'row', alignItems: 'center', gap: 5,
-              height: 40, paddingHorizontal: 16, borderRadius: 20,
-              backgroundColor: rankType === t.key ? t.color : '#fff',
-              ...(rankType !== t.key ? { boxShadow: [{ offsetX: 0, offsetY: 1, blurRadius: 3, color: 'rgba(0,0,0,0.06)' }] } : {}),
-            } as any}
-          >
-            <Ionicons name={t.icon as any} size={14} color={rankType === t.key ? '#fff' : t.color} />
-            <Text style={{ fontSize: 13, fontWeight: '600', color: rankType === t.key ? '#fff' : '#555' }}>{t.label}</Text>
-          </Pressable>
-        ))}
-      </ScrollView>
+        {/* 榜单类型 Tabs */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ flexGrow: 0, flexShrink: 0 }}
+          contentContainerStyle={{ paddingHorizontal: 16, gap: 8 }}
+        >
+          {RANK_TABS.map((t) => (
+            <Pressable
+              key={t.key}
+              onPress={() => handleTabChange(t.key)}
+              android_ripple={{ color: '#E0E0E0', borderless: false }}
+              style={{
+                flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                gap: 4, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20,
+                backgroundColor: rankType === t.key ? t.color : '#FFFFFF',
+                borderWidth: rankType === t.key ? 0 : 1,
+                borderColor: '#E8E8E8',
+              }}
+            >
+              <Ionicons name={t.icon as any} size={13} color={rankType === t.key ? '#fff' : t.color} />
+              <Text style={{ fontSize: 13, fontWeight: '600', color: rankType === t.key ? '#fff' : '#444' }}>{t.label}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
 
-      {/* 周期 Tabs（热词榜不需要） */}
-      {rankType !== 'keywords' && (
-        <View style={{ flexDirection: 'row', paddingHorizontal: 16, marginBottom: 8 }}>
-          <View style={{ flexDirection: 'row', backgroundColor: '#EBEBEB', borderRadius: 20, padding: 3 }}>
-            {PERIOD_TABS.map((t) => (
-              <Pressable
-                key={t.key}
-                onPress={() => handlePeriodChange(t.key)}
-                style={{ paddingHorizontal: 16, paddingVertical: 5, borderRadius: 16, backgroundColor: period === t.key ? '#fff' : 'transparent' }}
-              >
-                <Text style={{ fontSize: 13, fontWeight: period === t.key ? '600' : '400', color: period === t.key ? '#1A1A1A' : '#888' }}>{t.label}</Text>
-              </Pressable>
-            ))}
+        {/* 周期 Tabs（热词榜不显示） */}
+        {rankType !== 'keywords' && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginTop: 10, marginBottom: 4 }}>
+            <View style={{ flexDirection: 'row', backgroundColor: '#E8E8E8', borderRadius: 18, padding: 3 }}>
+              {PERIOD_TABS.map((t) => (
+                <Pressable
+                  key={t.key}
+                  onPress={() => handlePeriodChange(t.key)}
+                  style={{
+                    paddingHorizontal: 14, paddingVertical: 4, borderRadius: 14,
+                    backgroundColor: period === t.key ? '#fff' : 'transparent',
+                  }}
+                >
+                  <Text style={{ fontSize: 13, fontWeight: period === t.key ? '700' : '400', color: period === t.key ? '#1A1A1A' : '#888' }}>{t.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+            {!!lastUpdated && (
+              <Text style={{ fontSize: 11, color: '#BBB', marginLeft: 'auto' }}>{lastUpdated}</Text>
+            )}
           </View>
-          {lastUpdated ? (
-            <Text style={{ fontSize: 11, color: '#BBB', alignSelf: 'center', marginLeft: 'auto' }}>{lastUpdated}</Text>
-          ) : null}
-        </View>
-      )}
+        )}
+      </View>
 
       {/* 内容区 */}
       {loading ? (
