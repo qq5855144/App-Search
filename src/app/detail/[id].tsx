@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { fetchRepoDetail, fetchReleases, fetchReadme, getPlatformFromFilename, filterInstallAssets, filterVerificationAssets } from '@/lib/github';
 import { addFavorite, removeFavorite, isFavorite, addDownloadRecord } from '@/lib/database';
+import { addAppEvent } from '@/lib/events';
 import type { AppItem, GitHubRelease } from '@/types';
 import PlatformTag from '@/components/openappstore/PlatformTag';
 import Marked, { Renderer } from 'react-native-marked';
@@ -274,6 +275,8 @@ export default function DetailScreen() {
           fetchReadme(owner, repo).catch(() => ''),
         ]);
         setApp(detail);
+        // Record view event
+        addAppEvent({ event_type: 'view', app_id: detail.id, app_name: detail.name }).catch(() => {});
         const installRels = rels.map((r) => ({
           ...r,
           assets: filterInstallAssets(r.assets),
@@ -294,8 +297,13 @@ export default function DetailScreen() {
 
   const toggleFav = async () => {
     if (!app) return;
-    if (favored) { await removeFavorite(app.id); setFavored(false); }
-    else { await addFavorite(app); setFavored(true); }
+    if (favored) {
+      await removeFavorite(app.id); setFavored(false);
+      addAppEvent({ event_type: 'favorite', app_id: app.id, app_name: app.name }).catch(() => {});
+    } else {
+      await addFavorite(app); setFavored(true);
+      addAppEvent({ event_type: 'favorite', app_id: app.id, app_name: app.name }).catch(() => {});
+    }
   };
 
   if (loading) {
@@ -432,6 +440,7 @@ export default function DetailScreen() {
                                   file_size: asset.size,
                                   html_url: asset.browser_download_url,
                                 }).catch(() => {});
+                                addAppEvent({ event_type: 'download', app_id: app.id, app_name: app.name }).catch(() => {});
                                 Linking.openURL(asset.browser_download_url);
                               }}
                               style={{ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20,
