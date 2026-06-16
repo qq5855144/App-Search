@@ -149,7 +149,7 @@ export default function RankingsScreen() {
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#F5F6F8' }} edges={['top']}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#F5F6F8' }} edges={['top', 'bottom']}>
       <View
         style={{
           flexDirection: 'row',
