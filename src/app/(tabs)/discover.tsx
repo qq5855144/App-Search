@@ -28,10 +28,10 @@ const CATEGORIES = [
   { key: '系统工具', term: 'topic:system OR topic:utility' },
 ];
 
-const SORT_OPTIONS = [
-  { key: 'stars',   label: '⭐ Stars' },
-  { key: 'updated', label: '🕐 最新更新' },
-  { key: 'forks',   label: '🔱 Forks' },
+const SORT_OPTIONS: { key: string; label: string; icon: string }[] = [
+  { key: 'stars',   label: 'Stars',   icon: 'star' },
+  { key: 'updated', label: '最新更新', icon: 'time-outline' },
+  { key: 'forks',   label: 'Forks',   icon: 'git-branch-outline' },
 ];
 
 function buildQuery(platform: string, category: string): string {
@@ -159,7 +159,9 @@ export default function DiscoverTab() {
                   <Pressable key={s.key} onPress={() => reset(platform, category, s.key)}
                     style={{ paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12,
                       borderWidth: 1, borderColor: active ? '#1677FF' : '#E0E0E0',
-                      backgroundColor: active ? '#EBF3FF' : '#fff' }}>
+                      backgroundColor: active ? '#EBF3FF' : '#fff',
+                      flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <Ionicons name={s.icon as any} size={13} color={active ? '#1677FF' : '#777'} />
                     <Text style={{ fontSize: 12, color: active ? '#1677FF' : '#777',
                       fontWeight: active ? '600' : '400' }}>{s.label}</Text>
                   </Pressable>
