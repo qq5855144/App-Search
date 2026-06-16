@@ -10,6 +10,19 @@ import { supabase } from '@/client/supabase';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
 
+// 前端兜底过滤词列表（防止数据库未覆盖的边缘词）
+const BLOCKED_PATTERNS = [
+  /色情|裸体|黄片|成人片|约炮|嫖娼/i,
+  /\b(porn|nude|xxx|sex(?:ual)?|av\b)/i,
+  /赌博|赌场|博彩/i,
+  /毒品|大麻|冰毒|海洛因|可卡因/i,
+  /\b(drug|weed|cocaine)\b/i,
+  /炸弹|枪支|暗网|杀人教程/i,
+];
+function isSafeKeyword(kw: string): boolean {
+  return !BLOCKED_PATTERNS.some((re) => re.test(kw));
+}
+
 export default function SearchTab() {
   const inputRef = useRef<TextInput>(null);
   const textRef = useRef('');
@@ -28,15 +41,15 @@ export default function SearchTab() {
   const loadHotWords = useCallback(async () => {
     try {
       const { data } = await supabase
-        .from('search_hot_words')
+        .from('safe_hot_words')
         .select('keyword')
         .order('search_count', { ascending: false })
         .limit(20);
       if (Array.isArray(data) && data.length > 0) {
-        setHotWords(data.map((r: any) => r.keyword));
+        setHotWords(data.map((r: any) => r.keyword).filter(isSafeKeyword));
         return;
       }
-      // 表中暂无数据时，直接从 app_events 聚合
+      // 视图暂无数据时，直接从 app_events 聚合并过滤
       const { data: events } = await supabase
         .from('app_events')
         .select('keyword')
@@ -45,7 +58,11 @@ export default function SearchTab() {
         .neq('keyword', '');
       if (Array.isArray(events) && events.length > 0) {
         const freq: Record<string, number> = {};
-        for (const e of events) { freq[e.keyword] = (freq[e.keyword] || 0) + 1; }
+        for (const e of events) {
+          if (e.keyword && isSafeKeyword(e.keyword)) {
+            freq[e.keyword] = (freq[e.keyword] || 0) + 1;
+          }
+        }
         const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([k]) => k);
         setHotWords(sorted);
       }
