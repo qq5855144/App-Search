@@ -173,13 +173,16 @@ export default function RankingsScreen() {
       <FlatList
         data={apps}
         keyExtractor={(item) => String(item.id)}
+        style={{ flex: 1 }}
+        contentContainerStyle={{ flexGrow: 1, paddingBottom: 24 }}
+        scrollEnabled={true}
+        showsVerticalScrollIndicator={true}
         renderItem={({ item, index }) => (
           <Pressable onPress={() => handleAppPress(item)} style={{ position: 'relative' }}>
             {renderRankBadge(index)}
             <AppCard app={item} />
           </Pressable>
         )}
-        contentContainerStyle={{ paddingBottom: 24 }}
         ListHeaderComponent={
           <View>
             <View
