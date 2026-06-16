@@ -38,7 +38,7 @@ export default function HomeTab() {
       if (isRefresh) setRefreshing(true);
       else if (pageNum === 1) setLoading(true);
       const cat = CATEGORIES.find((c) => c.key === catKey) || CATEGORIES[0];
-      const { items } = await searchRepos(cat.q, { page: pageNum, per_page: 20, sort: 'stars' });
+      const { items } = await searchRepos(cat.q, { page: pageNum, per_page: 20, sort: 'stars', installableOnly: true });
       if (pageNum === 1) setApps(items);
       else setApps((prev) => [...prev, ...items]);
       setHasMore(items.length >= 20);
