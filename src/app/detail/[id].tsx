@@ -9,7 +9,7 @@ import { addFavorite, removeFavorite, isFavorite } from '@/lib/database';
 import type { AppItem, GitHubRelease } from '@/types';
 import PlatformTag from '@/components/openappstore/PlatformTag';
 import Marked, { Renderer } from 'react-native-marked';
-import type { ImageStyle } from 'react-native';
+
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -24,17 +24,16 @@ function formatCount(n: number) {
 
 // ─── 自定义 Renderer：解决 shields.io SVG 徽章不显示的根本问题 ────────────────
 class AppRenderer extends Renderer {
-  // react-native-marked v8 的 image 方法接收 token 对象（含 href/text/title）
   // 覆盖 image：使用 expo-image 替代 react-native Image，shields.io 强制 PNG 格式
-  image(token: { href: string; text?: string; title?: string }): ReactNode {
-    let src = token.href;
+  image(uri: string, alt?: string, _style?: ImageStyle): ReactNode {
+    let src = uri;
     // shields.io / badge 相关 URL 默认返回 SVG，react-native 无法渲染 → 强制转 PNG
     if (/shields\.io|badge\.svg|gitcode\.com.*badge|badgen\.net/i.test(src)) {
       src = src.includes('?') ? src + '&format=png' : src + '?format=png';
     }
     return (
       <Image
-        key={src}
+        key={uri}
         source={{ uri: src }}
         style={{ height: 20, minWidth: 20, maxWidth: '100%' as unknown as number }}
         contentFit="contain"
