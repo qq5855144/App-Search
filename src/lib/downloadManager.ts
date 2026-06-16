@@ -11,7 +11,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const IS_WEB = Platform.OS === 'web';
 
-const APP_FOLDER_NAME = '开源应用搜索';
+const APP_FOLDER_NAME = '开源应用商店';
 const SAF_URI_KEY = '@openappstore/saf_downloads_uri';
 
 // 内存缓存 SAF 目录 URI；undefined = 尚未初始化，null = 无权限/非 Android
