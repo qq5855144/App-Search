@@ -1,5 +1,5 @@
 import { supabase } from '@/client/supabase'
-import type { AppItem, GitHubRelease, InstallableCheckResult } from '@/types'
+import type { AppItem, GitHubRelease } from '@/types'
 
 let cachedToken: string | null = null
 
@@ -31,11 +31,11 @@ export async function searchRepos(
   q: string,
   options: { sort?: string; order?: string; page?: number; per_page?: number; installableOnly?: boolean } = {}
 ): Promise<{ items: AppItem[]; total_count: number }> {
-  const query = normalizeStoreQuery(q)
   const { data, error } = await supabase.functions.invoke('github-proxy', {
     body: {
       action: 'search',
-      params: { q: query, sort: options.sort || 'stars', order: options.order || 'desc', page: options.page || 1, per_page: options.per_page || 30 },
+      // 多取一些候选，供 installableOnly 过滤后仍有足够数量
+      params: { q, sort: options.sort || 'stars', order: options.order || 'desc', page: options.page || 1, per_page: options.installableOnly ? 30 : (options.per_page || 30) },
       token: cachedToken,
     },
   })
@@ -43,52 +43,54 @@ export async function searchRepos(
     const msg = await extractErrorMessage(error)
     throw new Error(msg)
   }
-  const items = (data.data?.items || []).map((item: any) => mapRepoToApp(item))
+  let items = (data.data?.items || []).map((item: any) => mapRepoToApp(item))
+
+  // 批量校验安装包，过滤掉无安装包的仓库并填充版本/下载量/平台
   if (options.installableOnly && items.length > 0) {
-    const checkedItems = await enrichInstallableApps(items)
-    // 防止批量校验接口未部署、GitHub 限流或查询过窄导致页面全空；有校验结果时优先展示可安装应用，否则回退到搜索结果。
-    if (checkedItems.length > 0) {
-      return { items: checkedItems, total_count: data.data?.total_count || 0 }
-    }
+    items = await enrichWithInstallable(items)
   }
-  return { items, total_count: data.data?.total_count || 0 }
+
+  // 按原始 per_page 截取
+  const limit = options.per_page || 20
+  return { items: items.slice(0, limit), total_count: data.data?.total_count || 0 }
 }
 
-async function enrichInstallableApps(items: AppItem[]): Promise<AppItem[]> {
+/** 批量校验安装包，填充 AppItem 中的版本、平台、下载量字段，过滤无安装包的项目
+ *  安全策略：校验失败、返回格式异常、或过滤后为空 → 全部降级返回原始列表，避免页面白屏 */
+async function enrichWithInstallable(items: AppItem[]): Promise<AppItem[]> {
   try {
-    const repos = items.slice(0, 20).map((item) => ({ owner: item.owner, repo: item.repo }))
+    const repos = items.map((a) => ({ owner: a.owner, repo: a.repo }))
     const { data, error } = await supabase.functions.invoke('github-proxy', {
-      body: {
-        action: 'check_installable_batch',
-        params: { repos },
-        token: cachedToken,
-      },
+      body: { action: 'check_installable_batch', params: { repos }, token: cachedToken },
     })
-    if (error) return []
-    const rawData = data.data || {}
-    const resultMap = Array.isArray(rawData)
-      ? rawData.reduce((map: Record<string, InstallableCheckResult>, item: any) => {
-        if (item?.key) map[item.key] = item.result || { ok: Boolean(item.ok) }
-        return map
-      }, {})
-      : rawData
-    return items.flatMap((item) => {
-      const key = `${item.owner}/${item.repo}`
-      const raw = resultMap[key]
-      const result: InstallableCheckResult =
-        typeof raw === 'boolean' ? { ok: raw } : (raw || { ok: false })
-      if (!result.ok) return []
-      return [{
-        ...item,
-        has_installable_assets: true,
-        latest_version: result.latest_version ?? item.latest_version,
-        latest_release_date: result.latest_release_date ?? item.latest_release_date,
-        platforms: result.platforms?.length ? result.platforms : item.platforms,
-        total_downloads: result.total_downloads ?? item.total_downloads,
-      }]
-    })
+    // 接口报错或返回格式不是数组 → 降级
+    if (error || !Array.isArray(data?.data)) return items
+
+    const resultMap = new Map<string, any>()
+    for (const r of data.data) {
+      if (r?.key) resultMap.set(r.key, r)
+    }
+
+    const enriched = (items
+      .map((app): AppItem | null => {
+        const r = resultMap.get(`${app.owner}/${app.repo}`)
+        if (!r?.ok) return null
+        const mergedPlatforms = [...new Set([...app.platforms, ...(r.platforms || [])])]
+        return {
+          ...app,
+          has_installable_assets: true,
+          latest_version: r.latest_version ?? app.latest_version,
+          latest_release_date: r.latest_release_date ?? app.latest_release_date,
+          total_downloads: r.total_downloads ?? 0,
+          platforms: mergedPlatforms,
+        }
+      })
+      .filter((a) => a !== null)) as AppItem[]
+
+    // 关键回退：过滤后为空（全部 ok:false，通常是 API 限流或 check 未部署）→ 返回原始列表
+    return enriched.length > 0 ? enriched : items
   } catch {
-    return []
+    return items // 降级：网络/超时时不过滤
   }
 }
 
@@ -227,14 +229,6 @@ function mapRepoToApp(item: any): AppItem {
     total_downloads: 0,
     has_installable_assets: false,
   }
-}
-
-function normalizeStoreQuery(q: string): string {
-  const base = q.trim()
-  const safeguards = ['archived:false', 'fork:false']
-  return safeguards.reduce((query, token) => (
-    query.includes(token) ? query : `${query} ${token}`
-  ), base || 'app')
 }
 
 function detectPlatforms(topics: string[]): string[] {
