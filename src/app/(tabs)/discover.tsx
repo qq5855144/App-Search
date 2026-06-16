@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { View, Text, Pressable, FlatList, ActivityIndicator } from 'react-native';
+import { View, Text, Pressable, FlatList, ActivityIndicator, ScrollView } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,37 +9,60 @@ import AppCard from '@/components/openappstore/AppCard';
 import SkeletonCard from '@/components/openappstore/SkeletonCard';
 
 const PLATFORMS = [
-  { key: 'Android', icon: 'logo-android',      color: '#3DDC84' },
-  { key: 'iOS',     icon: 'logo-apple',         color: '#555' },
-  { key: 'Windows', icon: 'logo-windows',       color: '#0078D7' },
-  { key: 'macOS',   icon: 'logo-apple',         color: '#999' },
-  { key: 'Linux',   icon: 'terminal-outline',   color: '#E5A00D' },
+  { key: '全平台', icon: 'grid-outline',        color: '#1677FF' },
+  { key: 'Android', icon: 'logo-android',       color: '#3DDC84' },
+  { key: 'iOS',     icon: 'logo-apple',          color: '#555' },
+  { key: 'Windows', icon: 'logo-windows',        color: '#0078D7' },
+  { key: 'macOS',   icon: 'logo-apple',          color: '#999' },
+  { key: 'Linux',   icon: 'terminal-outline',    color: '#E5A00D' },
 ] as const;
 
-const QUERY: Record<string, string> = {
-  Android: 'android app stars:>1000',
-  iOS:     'ios app stars:>500',
-  Windows: 'windows app stars:>500',
-  macOS:   'macos app stars:>500',
-  Linux:   'linux app stars:>500',
-};
+const CATEGORIES = [
+  { key: '全部',     term: 'app' },
+  { key: '开发工具', term: 'developer-tools cli' },
+  { key: '效率工具', term: 'productivity' },
+  { key: '媒体',     term: 'media-player' },
+  { key: '游戏',     term: 'game' },
+  { key: '安全',     term: 'security' },
+  { key: '社交',     term: 'social' },
+  { key: '系统工具', term: 'system-utility' },
+];
+
+const SORT_OPTIONS = [
+  { key: 'stars',   label: '⭐ Stars' },
+  { key: 'updated', label: '🕐 最新更新' },
+  { key: 'forks',   label: '🔱 Forks' },
+];
+
+function buildQuery(platform: string, category: string): string {
+  const cat = CATEGORIES.find((c) => c.key === category)?.term ?? 'app';
+  const base = `${cat} stars:>100 archived:false`;
+  if (platform === '全平台') return base;
+  return `${platform.toLowerCase()} ${base}`;
+}
 
 export default function DiscoverTab() {
   const [apps, setApps] = useState<AppItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [platform, setPlatform] = useState<string>('Android');
+  const [platform, setPlatform] = useState<string>('全平台');
+  const [category, setCategory] = useState<string>('全部');
+  const [sort, setSort] = useState<string>('stars');
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const loadingRef = useRef(false);
 
-  const loadData = useCallback(async (pageNum = 1, isRefresh = false, p = platform) => {
+  const loadData = useCallback(async (
+    pageNum = 1, isRefresh = false,
+    p = platform, cat = category, s = sort,
+  ) => {
     if (loadingRef.current && !isRefresh) return;
     loadingRef.current = true;
     try {
       if (isRefresh) setRefreshing(true);
       else if (pageNum === 1) setLoading(true);
-      const { items } = await searchRepos(QUERY[p] || QUERY.Android, { page: pageNum, per_page: 20, sort: 'stars' });
+      const q = buildQuery(p, cat);
+      const { items } = await searchRepos(q, { page: pageNum, per_page: 20, sort: s });
       if (pageNum === 1) setApps(items);
       else setApps((prev) => [...prev, ...items]);
       setHasMore(items.length >= 20);
@@ -48,17 +71,16 @@ export default function DiscoverTab() {
       setRefreshing(false);
       loadingRef.current = false;
     }
-  }, [platform]);
+  }, [platform, category, sort]);
 
   useFocusEffect(useCallback(() => {
     if (apps.length === 0) loadData(1, false);
   }, [apps.length, loadData]));
 
-  const onPlatformPress = (p: string) => {
-    setPlatform(p);
-    setPage(1);
-    setApps([]);
-    loadData(1, false, p);
+  const reset = (p: string, cat: string, s: string) => {
+    setPlatform(p); setCategory(cat); setSort(s);
+    setPage(1); setApps([]);
+    loadData(1, false, p, cat, s);
   };
 
   return (
@@ -69,25 +91,62 @@ export default function DiscoverTab() {
         renderItem={({ item }) => <AppCard app={item} />}
         onRefresh={() => { setPage(1); loadData(1, true); }}
         refreshing={refreshing}
-        onEndReached={() => { if (!loadingRef.current && hasMore) { const n = page + 1; setPage(n); loadData(n); } }}
+        onEndReached={() => {
+          if (!loadingRef.current && hasMore) { const n = page + 1; setPage(n); loadData(n); }
+        }}
         onEndReachedThreshold={0.5}
         contentContainerStyle={{ paddingBottom: 24 }}
         ListHeaderComponent={
           <View>
-            <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 }}>
+            <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 10 }}>
               <Text style={{ fontSize: 22, fontWeight: '700', color: '#1A1A1A' }}>发现</Text>
             </View>
-            <View style={{ flexDirection: 'row', paddingHorizontal: 12, paddingBottom: 12, gap: 8, flexWrap: 'wrap' }}>
+
+            {/* 平台筛选 */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 6, gap: 8 }}>
               {PLATFORMS.map((p) => {
                 const active = platform === p.key;
                 return (
-                  <Pressable key={p.key} onPress={() => onPlatformPress(p.key)}
+                  <Pressable key={p.key} onPress={() => reset(p.key, category, sort)}
                     style={{ flexDirection: 'row', alignItems: 'center', gap: 5,
-                      paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20,
+                      paddingHorizontal: 13, paddingVertical: 7, borderRadius: 20,
                       borderWidth: 1.5, borderColor: active ? '#1677FF' : '#E0E0E0',
                       backgroundColor: active ? '#EBF3FF' : '#fff' }}>
                     <Ionicons name={p.icon as any} size={14} color={active ? '#1677FF' : p.color} />
                     <Text style={{ fontSize: 13, fontWeight: '500', color: active ? '#1677FF' : '#333' }}>{p.key}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            {/* 分类筛选 */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 6, gap: 8 }}>
+              {CATEGORIES.map((c) => {
+                const active = category === c.key;
+                return (
+                  <Pressable key={c.key} onPress={() => reset(platform, c.key, sort)}
+                    style={{ paddingHorizontal: 13, paddingVertical: 6, borderRadius: 16,
+                      backgroundColor: active ? '#1677FF' : '#F0F0F0' }}>
+                    <Text style={{ fontSize: 13, fontWeight: active ? '600' : '400',
+                      color: active ? '#fff' : '#555' }}>{c.key}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            {/* 排序选项 */}
+            <View style={{ flexDirection: 'row', paddingHorizontal: 12, paddingBottom: 10, gap: 8 }}>
+              {SORT_OPTIONS.map((s) => {
+                const active = sort === s.key;
+                return (
+                  <Pressable key={s.key} onPress={() => reset(platform, category, s.key)}
+                    style={{ paddingHorizontal: 12, paddingVertical: 5, borderRadius: 12,
+                      borderWidth: 1, borderColor: active ? '#1677FF' : '#E0E0E0',
+                      backgroundColor: active ? '#EBF3FF' : '#fff' }}>
+                    <Text style={{ fontSize: 12, color: active ? '#1677FF' : '#777',
+                      fontWeight: active ? '600' : '400' }}>{s.label}</Text>
                   </Pressable>
                 );
               })}
