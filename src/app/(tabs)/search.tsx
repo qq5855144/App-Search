@@ -33,7 +33,7 @@ export default function SearchTab() {
     try { addSearchHistory(k).then(loadHistory); } catch { /* ignore */ }
     try {
       setLoading(true); setSearched(true); setError('');
-      const { items } = await searchRepos(`${k} stars:>10 archived:false`, { sort: 'stars', per_page: 30 });
+      const { items } = await searchRepos(`${k} stars:>10 archived:false`, { sort: 'stars', per_page: 30, installableOnly: true });
       setResults(items);
     } catch (e: any) {
       setError(e?.message || '搜索失败'); setResults([]);
