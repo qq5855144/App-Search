@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { getDownloadHistory, clearDownloadHistory } from '@/lib/database';
 import type { DownloadRecord } from '@/types';
-import { Image } from 'expo-image';
+import AppIcon from '@/components/openappstore/AppIcon';
 
 export default function DownloadsScreen() {
   const router = useRouter();
@@ -35,8 +35,11 @@ export default function DownloadsScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={{ padding: 12, gap: 8, paddingBottom: 24 }}
         renderItem={({ item }) => (
-          <View style={{ backgroundColor: '#fff', borderRadius: 14, padding: 14, flexDirection: 'row', gap: 12, alignItems: 'center' }}>
-            <Image source={{ uri: item.avatar_url }} style={{ width: 44, height: 44, borderRadius: 10 }} contentFit="cover" />
+          <Pressable
+            onPress={() => router.push({ pathname: '/detail/[id]', params: { id: String(item.app_id), owner: item.owner, repo: item.repo } } as any)}
+            style={{ backgroundColor: '#fff', borderRadius: 14, padding: 14, flexDirection: 'row', gap: 12, alignItems: 'center' }}
+          >
+            <AppIcon owner={item.owner} url={item.avatar_url} name={item.app_name} size={44} />
             <View style={{ flex: 1, gap: 3 }}>
               <Text style={{ fontWeight: '600', color: '#1A1A1A' }}>{item.app_name}</Text>
               <Text style={{ fontSize: 12, color: '#888' }}>{item.version} · {item.download_time?.slice(0, 10)}</Text>
@@ -46,7 +49,7 @@ export default function DownloadsScreen() {
                 <Ionicons name="open-outline" size={20} color="#1677FF" />
               </Pressable>
             )}
-          </View>
+          </Pressable>
         )}
         ListEmptyComponent={
           <View style={{ alignItems: 'center', paddingTop: 80, gap: 8 }}>

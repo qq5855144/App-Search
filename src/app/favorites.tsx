@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { getFavorites, removeFavorite } from '@/lib/database';
 import type { FavoriteItem } from '@/types';
-import { Image } from 'expo-image';
+import AppIcon from '@/components/openappstore/AppIcon';
 
 export default function FavoritesScreen() {
   const router = useRouter();
@@ -34,7 +34,7 @@ export default function FavoritesScreen() {
             onPress={() => router.push({ pathname: '/detail/[id]', params: { id: String(item.app_id), owner: item.owner, repo: item.repo } } as any)}
             style={{ backgroundColor: '#fff', borderRadius: 14, padding: 14, flexDirection: 'row', gap: 12, alignItems: 'center' }}
           >
-            <Image source={{ uri: item.avatar_url }} style={{ width: 44, height: 44, borderRadius: 10 }} contentFit="cover" />
+            <AppIcon owner={item.owner} url={item.avatar_url} name={item.app_name} size={44} />
             <View style={{ flex: 1, gap: 3 }}>
               <Text style={{ fontWeight: '600', color: '#1A1A1A' }}>{item.app_name}</Text>
               <Text style={{ fontSize: 12, color: '#888' }} numberOfLines={1}>{item.description || item.owner}</Text>

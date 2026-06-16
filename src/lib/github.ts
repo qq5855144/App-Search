@@ -263,14 +263,25 @@ export async function fetchRateLimit(): Promise<{ remaining: number; limit: numb
 
 function mapRepoToApp(item: any): AppItem {
   const platforms = detectPlatforms(item.topics || [])
+  const ownerLogin = item.owner?.login || ''
+  const ownerAvatar = item.owner?.avatar_url || null
+
+  let finalAvatarUrl = ownerAvatar
+  if (!finalAvatarUrl && ownerLogin) {
+    finalAvatarUrl = `https://github.com/${ownerLogin}.png`
+  }
+  if (!finalAvatarUrl) {
+    finalAvatarUrl = ''
+  }
+
   return {
     id: item.id,
     full_name: item.full_name,
     name: item.name,
     description: item.description,
-    owner: item.owner?.login || '',
+    owner: ownerLogin,
     repo: item.name,
-    avatar_url: item.owner?.avatar_url || '',
+    avatar_url: finalAvatarUrl,
     stars: item.stargazers_count || 0,
     forks: item.forks_count || 0,
     language: item.language,

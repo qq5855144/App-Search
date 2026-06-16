@@ -3,11 +3,11 @@ import { View, Text, Pressable, ScrollView, ActivityIndicator, Linking, Platform
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { fetchRepoDetail, fetchReleases, fetchReadme, getPlatformFromFilename, filterInstallAssets, filterVerificationAssets } from '@/lib/github';
 import { addFavorite, removeFavorite, isFavorite, addDownloadRecord } from '@/lib/database';
 import { addAppEvent } from '@/lib/events';
 import type { AppItem, GitHubRelease } from '@/types';
+import AppIcon from '@/components/openappstore/AppIcon';
 import PlatformTag from '@/components/openappstore/PlatformTag';
 import Marked, { Renderer } from 'react-native-marked';
 import type { ImageStyle } from 'react-native';
@@ -343,9 +343,7 @@ export default function DetailScreen() {
         <View style={{ backgroundColor: '#fff', borderRadius: 18, padding: 16, gap: 12,
           boxShadow: [{ offsetX: 0, offsetY: 1, blurRadius: 4, color: 'rgba(0,0,0,0.06)' }] }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-            <Image source={{ uri: app.avatar_url }}
-              style={{ width: 80, height: 80, borderRadius: 18, borderWidth: 1, borderColor: '#F0F0F0' }}
-              contentFit="cover" />
+            <AppIcon owner={app.owner} url={app.avatar_url} name={app.name} size={80} />
             <View style={{ flex: 1, gap: 6 }}>
               <Text style={{ fontSize: 20, fontWeight: '700', color: '#1A1A1A' }}>{app.name}</Text>
               {/* 平台标签 */}

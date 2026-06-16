@@ -14,6 +14,29 @@ import { Platform } from 'react-native'
 
 export type EventType = 'search' | 'view' | 'download' | 'favorite'
 
+export type TimeRange = 'day' | 'week' | 'month' | 'all';
+
+function getTimeRangeFilter(range: TimeRange): number {
+  const now = Date.now();
+  let startTime: number;
+  
+  switch (range) {
+    case 'day':
+      startTime = now - 24 * 60 * 60 * 1000;
+      break;
+    case 'week':
+      startTime = now - 7 * 24 * 60 * 60 * 1000;
+      break;
+    case 'month':
+      startTime = now - 30 * 24 * 60 * 60 * 1000;
+      break;
+    default:
+      return 0;
+  }
+  
+  return startTime;
+}
+
 export interface AppEvent {
   id: string
   event_type: EventType
@@ -95,6 +118,15 @@ export async function getAllEvents(): Promise<AppEvent[]> {
   return nativeReadAll()
 }
 
+/** Returns events filtered by time range. */
+export async function getEventsByTimeRange(timeRange: TimeRange): Promise<AppEvent[]> {
+  const startTime = getTimeRangeFilter(timeRange);
+  if (startTime === 0) return getAllEvents();
+  
+  const all = await getAllEvents();
+  return all.filter((e) => e.created_at >= startTime);
+}
+
 /** Returns counts grouped by event_type. */
 export async function getEventCounts(): Promise<Record<EventType, number>> {
   const counts: Record<EventType, number> = { search: 0, view: 0, download: 0, favorite: 0 }
@@ -122,6 +154,73 @@ export async function getTopApps(
     .map(([app_id, v]) => ({ app_id, ...v }))
     .sort((a, b) => b.count - a.count)
     .slice(0, limit)
+}
+
+/**
+ * Returns top apps by combined score (downloads * 5 + views * 1 + favorites * 3).
+ * Supports time range filtering for day/week/month/all rankings.
+ */
+export async function getTopAppsByScore(
+  limit = 20,
+  timeRange: TimeRange = 'all'
+): Promise<{ app_id: number; app_name: string; score: number; views: number; downloads: number; favorites: number }[]> {
+  const events = await getEventsByTimeRange(timeRange);
+  const stats = new Map<number, { app_name: string; views: number; downloads: number; favorites: number }>();
+  
+  for (const e of events) {
+    if (!e.app_id) continue;
+    const prev = stats.get(e.app_id) || { app_name: e.app_name ?? '', views: 0, downloads: 0, favorites: 0 };
+    
+    switch (e.event_type) {
+      case 'view':
+        prev.views++;
+        break;
+      case 'download':
+        prev.downloads++;
+        break;
+      case 'favorite':
+        prev.favorites++;
+        break;
+    }
+    if (e.app_name) prev.app_name = e.app_name;
+    stats.set(e.app_id, prev);
+  }
+  
+  return Array.from(stats.entries())
+    .map(([app_id, v]) => ({
+      app_id,
+      app_name: v.app_name,
+      score: v.downloads * 5 + v.views * 1 + v.favorites * 3,
+      views: v.views,
+      downloads: v.downloads,
+      favorites: v.favorites,
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+/**
+ * Returns popular search keywords from local events.
+ * Supports time range filtering.
+ */
+export async function getPopularKeywords(
+  limit = 10,
+  timeRange: TimeRange = 'all'
+): Promise<{ keyword: string; count: number }[]> {
+  const events = await getEventsByTimeRange(timeRange);
+  const stats = new Map<string, number>();
+  
+  for (const e of events) {
+    if (e.event_type !== 'search' || !e.keyword) continue;
+    const kw = e.keyword.toLowerCase().trim();
+    if (kw.length < 2) continue;
+    stats.set(kw, (stats.get(kw) || 0) + 1);
+  }
+  
+  return Array.from(stats.entries())
+    .map(([keyword, count]) => ({ keyword, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
 }
 
 /** Clear all local events (e.g. from settings). */
