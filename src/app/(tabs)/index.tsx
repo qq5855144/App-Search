@@ -3,7 +3,7 @@ import { View, Text, Pressable, FlatList, ActivityIndicator } from 'react-native
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { searchRepos } from '@/lib/github';
+import { searchRepos, checkReposHaveInstallable } from '@/lib/github';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
 import SkeletonCard from '@/components/openappstore/SkeletonCard';
@@ -39,8 +39,11 @@ export default function HomeTab() {
       else if (pageNum === 1) setLoading(true);
       const cat = CATEGORIES.find((c) => c.key === catKey) || CATEGORIES[0];
       const { items } = await searchRepos(cat.q, { page: pageNum, per_page: 20, sort: 'stars' });
-      if (pageNum === 1) setApps(items);
-      else setApps((prev) => [...prev, ...items]);
+      // 批量验证：只保留真正有可安装包的项目
+      const installable = await checkReposHaveInstallable(items);
+      const filtered = items.filter((i) => installable[`${i.owner}/${i.repo}`]);
+      if (pageNum === 1) setApps(filtered);
+      else setApps((prev) => [...prev, ...filtered]);
       setHasMore(items.length >= 20);
     } catch (e: any) {
       setError(e?.message || '加载失败');
