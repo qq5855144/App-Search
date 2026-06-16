@@ -6,6 +6,9 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -123,10 +126,45 @@ jobs:
           path: android/app/build/outputs/apk/release/*.apk
           retention-days: 30
 
-      # 推送 v* 标签时自动创建 GitHub Release 并附上 APK
-      - name: Create GitHub Release
+      # ── 每次 push main：更新 latest 滚动预发布版 ──────────────────────────
+      - name: Rename APK with commit SHA (main push)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          DATE=$(date +'%Y%m%d')
+          mv android/app/build/outputs/apk/release/app-release.apk \
+             android/app/build/outputs/apk/release/openappstore-${DATE}-${SHORT_SHA}.apk
+
+      - name: Publish latest rolling release (main push)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Latest Build"
+          prerelease: true
+          make_latest: false
+          body: |
+            🤖 **自动构建** — 最新 main 分支 APK
+
+            - Commit: [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            - 构建时间：${{ github.event.head_commit.timestamp }}
+            - 消息：${{ github.event.head_commit.message }}
+
+            > 此为滚动预发布版，每次 push 自动覆盖。正式版请关注 `v*` 标签 Release。
+          files: android/app/build/outputs/apk/release/*.apk
+
+      # ── push v* 标签：创建正式版本 Release ───────────────────────────────
+      - name: Rename APK with version tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG=${{ github.ref_name }}
+          mv android/app/build/outputs/apk/release/app-release.apk \
+             android/app/build/outputs/apk/release/openappstore-${TAG}.apk
+
+      - name: Create versioned GitHub Release (tag push)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: android/app/build/outputs/apk/release/*.apk
           generate_release_notes: true
+          make_latest: true
+          files: android/app/build/outputs/apk/release/*.apk
