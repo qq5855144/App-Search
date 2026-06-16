@@ -212,6 +212,16 @@ export function getPlatformFromFilename(filename: string): string | null {
   return null
 }
 
+export async function checkReposHaveInstallable(items: AppItem[]): Promise<Record<string, boolean>> {
+  if (!items.length) return {}
+  const repos = items.map((i) => ({ owner: i.owner, repo: i.repo }))
+  const { data, error } = await supabase.functions.invoke('github-proxy', {
+    body: { action: 'check_installable_batch', params: { repos }, token: cachedToken },
+  })
+  if (error) return {}
+  return (data?.data || {}) as Record<string, boolean>
+}
+
 export function filterInstallAssets(assets: GitHubRelease['assets']) {
   const sigExts = ['.asc', '.sig', '.sha256', '.sha512', '.md5', '.txt']
   return assets.filter((a) => {
