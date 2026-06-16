@@ -1,4 +1,5 @@
 import type { AppItem, GitHubRelease } from '@/types'
+import { getCache, setCache, HOUR, DAY, searchCacheKey } from '@/lib/cache'
 
 let cachedToken: string | null = null
 
@@ -67,18 +68,44 @@ export async function searchRepos(
   q: string,
   options: { sort?: string; order?: string; page?: number; per_page?: number; installableOnly?: boolean } = {}
 ): Promise<{ items: AppItem[]; total_count: number }> {
-  // 优先走代理；代理失败自动降级直连 GitHub API
+  const sort = options.sort || 'stars'
+  const order = options.order || 'desc'
+  const page = options.page || 1
+  const perPage = options.per_page || 30
+  const cacheKey = searchCacheKey(q, sort, order, page, perPage)
+  const ttl = 6 * HOUR
+
+  // Return cached result immediately if available
+  const cached = await getCache<{ items: AppItem[]; total_count: number }>(cacheKey)
+  if (cached) {
+    // Refresh in background without blocking
+    ;(async () => {
+      try {
+        const fresh = await _fetchSearchRepos(q, sort, order, page, perPage)
+        await setCache(cacheKey, fresh, ttl)
+      } catch { /* silent */ }
+    })()
+    return cached
+  }
+
+  const result = await _fetchSearchRepos(q, sort, order, page, perPage)
+  await setCache(cacheKey, result, ttl)
+  return result
+}
+
+async function _fetchSearchRepos(
+  q: string, sort: string, order: string, page: number, perPage: number
+): Promise<{ items: AppItem[]; total_count: number }> {
   const proxyData = await callEdgeFunction({
     action: 'search',
-    params: { q, sort: options.sort || 'stars', order: options.order || 'desc', page: options.page || 1, per_page: options.per_page || 30 },
+    params: { q, sort, order, page, per_page: perPage },
     token: cachedToken,
   })
   if (proxyData?.data?.items) {
     const items = proxyData.data.items.map((item: any) => mapRepoToApp(item))
     return { items, total_count: proxyData.data.total_count || 0 }
   }
-  // 代理不可用 → GitHub 直连
-  return searchGitHubDirect(q, options)
+  return searchGitHubDirect(q, { sort, order, page, per_page: perPage })
 }
 
 /**
@@ -123,21 +150,33 @@ export async function enrichAppsInBackground(
 }
 
 export async function fetchRepoDetail(owner: string, repo: string): Promise<AppItem> {
+  const cacheKey = `repo:${owner}/${repo}`
+  const cached = await getCache<AppItem>(cacheKey)
+  if (cached) return cached
   const data = await callEdgeFunction({
     action: 'repo',
     params: { owner, repo },
     token: cachedToken,
   })
-  if (data?.data) return mapRepoToApp(data.data)
-  // 代理失败 → 直连
-  const headers: Record<string, string> = { 'Accept': 'application/vnd.github+json' }
-  if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
-  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}`, { headers })
-  if (!res.ok) throw new Error(`获取仓库详情失败 (${res.status})`)
-  return mapRepoToApp(await res.json())
+  let result: AppItem
+  if (data?.data) {
+    result = mapRepoToApp(data.data)
+  } else {
+    // 代理失败 → 直连
+    const headers: Record<string, string> = { 'Accept': 'application/vnd.github+json' }
+    if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
+    const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}`, { headers })
+    if (!res.ok) throw new Error(`获取仓库详情失败 (${res.status})`)
+    result = mapRepoToApp(await res.json())
+  }
+  await setCache(cacheKey, result, 12 * HOUR)
+  return result
 }
 
 export async function fetchReleases(owner: string, repo: string, page = 1): Promise<GitHubRelease[]> {
+  const cacheKey = `releases:${owner}/${repo}:${page}`
+  const cached = await getCache<GitHubRelease[]>(cacheKey)
+  if (cached) return cached
   const data = await callEdgeFunction({
     action: 'releases',
     params: { owner, repo, page },
@@ -158,36 +197,42 @@ export async function fetchReleases(owner: string, repo: string, page = 1): Prom
       browser_download_url: a.browser_download_url,
     })),
   }))
-  if (Array.isArray(list)) return parseReleases(list)
-  // 代理失败 → 直连
-  const headers: Record<string, string> = { 'Accept': 'application/vnd.github+json' }
-  if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
-  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/releases?page=${page}&per_page=10`, { headers })
-  if (!res.ok) throw new Error(`获取 Releases 失败 (${res.status})`)
-  return parseReleases(await res.json())
+  let result: GitHubRelease[]
+  if (Array.isArray(list)) {
+    result = parseReleases(list)
+  } else {
+    // 代理失败 → 直连
+    const headers: Record<string, string> = { 'Accept': 'application/vnd.github+json' }
+    if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
+    const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/releases?page=${page}&per_page=10`, { headers })
+    if (!res.ok) throw new Error(`获取 Releases 失败 (${res.status})`)
+    result = parseReleases(await res.json())
+  }
+  await setCache(cacheKey, result, DAY)
+  return result
 }
 
 export async function fetchReadme(owner: string, repo: string): Promise<string> {
+  const cacheKey = `readme:${owner}/${repo}`
+  const cached = await getCache<string>(cacheKey)
+  if (cached !== null) return cached
   const data = await callEdgeFunction({
     action: 'readme',
     params: { owner, repo },
     token: cachedToken,
   })
   // GitHub API 返回的 base64 中含 `\n`，必须先清除再 atob
-  const raw = (data.data?.content || '').replace(/\s/g, '')
+  const raw = (data?.data?.content || '').replace(/\s/g, '')
   if (!raw) return ''
+  let result = ''
   try {
-    // 优先使用 TextDecoder 正确处理多字节 UTF-8 字符（中文、emoji 等）
     const bytes = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0))
-    return new TextDecoder().decode(bytes)
+    result = new TextDecoder().decode(bytes)
   } catch {
-    try {
-      // 降级方案：旧浏览器 / 纯 ASCII README
-      return decodeURIComponent(escape(atob(raw)))
-    } catch {
-      return ''
-    }
+    try { result = decodeURIComponent(escape(atob(raw))) } catch { result = '' }
   }
+  await setCache(cacheKey, result, DAY)
+  return result
 }
 
 export async function fetchContributors(owner: string, repo: string): Promise<Array<{ login: string; avatar_url: string; html_url: string }>> {
