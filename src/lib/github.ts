@@ -175,6 +175,7 @@ function mapRepoToApp(item: any): AppItem {
     latest_release_date: null,
     html_url: item.html_url,
     updated_at: item.updated_at || item.pushed_at,
+    license: item.license?.name || item.license?.spdx_id || null,
   }
 }
 
