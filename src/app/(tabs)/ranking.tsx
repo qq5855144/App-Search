@@ -265,16 +265,18 @@ export default function RankingScreen() {
           </Text>
         </ScrollView>
       ) : (
-        <FlatList
-          data={items}
-          keyExtractor={(i) => String(i.app_id)}
-          renderItem={renderItem}
-          contentInsetAdjustmentBehavior="automatic"
-          refreshing={refreshing}
-          onRefresh={() => { setRefreshing(true); loadRankings(rankType, period); }}
-          style={{ marginHorizontal: 16, backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden' }}
-          contentContainerStyle={{ paddingBottom: 120 }}
-        />
+        <View style={{ flex: 1, marginHorizontal: 16, backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden' }}>
+          <FlatList
+            data={items}
+            keyExtractor={(i) => String(i.app_id)}
+            renderItem={renderItem}
+            contentInsetAdjustmentBehavior="automatic"
+            refreshing={refreshing}
+            onRefresh={() => { setRefreshing(true); loadRankings(rankType, period); }}
+            style={{ flex: 1 }}
+            contentContainerStyle={{ paddingBottom: 120 }}
+          />
+        </View>
       )}
     </SafeAreaView>
   );
