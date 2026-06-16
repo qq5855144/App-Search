@@ -207,8 +207,6 @@ export default function RankingsScreen() {
                     backgroundColor: activeRank === rank.key ? `${rank.color}1A` : '#fff',
                     borderWidth: 1.5,
                     borderColor: activeRank === rank.key ? rank.color : '#E0E0E0',
-                    transitionProperty: 'all',
-                    transitionDuration: 200,
                   }}
                 >
                   <Ionicons
