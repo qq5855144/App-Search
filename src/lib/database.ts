@@ -151,9 +151,15 @@ export async function addSearchHistory(keyword: string): Promise<void> {
     return;
   }
   const db = await initDb();
+  // 先插入/更新，再删除超出20条的旧记录（按 searched_at 保留最新20条）
   await db.runAsync(
     `INSERT OR REPLACE INTO search_history (id,keyword,searched_at) VALUES (?,?,?)`,
     [keyword, keyword, new Date().toISOString()]
+  );
+  await db.runAsync(
+    `DELETE FROM search_history WHERE id NOT IN (
+      SELECT id FROM search_history ORDER BY searched_at DESC LIMIT 20
+    )`
   );
 }
 
