@@ -44,18 +44,23 @@ class AppRenderer extends Renderer {
 }
 
 /**
- * 预处理 Markdown（完整版）：
+ * 预处理 Markdown（完整重写版）：
+ * 核心思路：把 HTML 转换为等效 Markdown，而不是直接丢弃
  * 1. 去除 YAML frontmatter
- * 2. GitHub Admonition `> [!NOTE]` → 普通 blockquote
- * 3. 逐行跳过纯 HTML 块（<a><div> 等），但保留 ![img]() 完整
- * 4. 去除行内 HTML 标签（<ins> <sub> <sup> 等）
- * 5. 清理连续空行
+ * 2. GitHub Admonitions `> [!NOTE]` → 普通 blockquote
+ * 3. `<a><img></a>` / `<img>` → `![alt](src)`（让 react-native-marked 渲染图片）
+ * 4. `<a href>text</a>` → `[text](href)`（保留链接）
+ * 5. HTML 标题标签 → Markdown 标题
+ * 6. 剥除剩余 HTML 标签（保留文字内容）
+ * 7. 清理多余空行
  */
 function preprocessMarkdown(md: string): string {
-  // 1. YAML frontmatter
-  let s = md.replace(/^---[\s\S]*?---\r?\n?/, '');
+  let s = md;
 
-  // 2. GitHub Admonitions: > [!NOTE] / [!TIP] / [!WARNING] / [!CAUTION] / [!IMPORTANT]
+  // 1. YAML frontmatter（--- ... ---）
+  s = s.replace(/^---[\s\S]*?---\r?\n?/, '');
+
+  // 2. GitHub Admonitions
   s = s.replace(/^>\s*\[!(NOTE|TIP|WARNING|CAUTION|IMPORTANT)\]\s*$/gm, (_, type) => {
     const labels: Record<string, string> = {
       NOTE: '📝 注意', TIP: '💡 提示', WARNING: '⚠️ 警告',
@@ -64,23 +69,54 @@ function preprocessMarkdown(md: string): string {
     return `> **${labels[type] ?? type}**`;
   });
 
-  // 3. 逐行处理 HTML 块
-  const lines = s.split('\n');
-  const out: string[] = [];
-  let skipUntilBlank = false;
+  // 3a. <a href="URL"><img src="SRC" alt="ALT"></a>  →  [![ALT](SRC)](URL)
+  s = s.replace(
+    /<a[^>]+href="([^"]*)"[^>]*>\s*<img[^>]+src="([^"]*)"[^>]*alt="([^"]*)"[^>]*\/?>\s*<\/a>/gi,
+    (_, href, src, alt) => (src ? `[![${alt}](${src})](${href})` : ''),
+  );
+  // alt 在 src 之后的写法
+  s = s.replace(
+    /<a[^>]+href="([^"]*)"[^>]*>\s*<img[^>]+alt="([^"]*)"[^>]+src="([^"]*)"[^>]*\/?>\s*<\/a>/gi,
+    (_, href, alt, src) => (src ? `[![${alt}](${src})](${href})` : ''),
+  );
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed === '') { skipUntilBlank = false; out.push(''); continue; }
-    if (skipUntilBlank) continue;
-    if (/^<[a-zA-Z]/.test(trimmed)) { skipUntilBlank = true; continue; }
+  // 3b. 单独的 <img src="SRC" alt="ALT"> → ![ALT](SRC)
+  s = s.replace(
+    /<img[^>]+src="([^"]*)"[^>]*alt="([^"]*)"[^>]*\/?>/gi,
+    (_, src, alt) => (src ? `![${alt || 'img'}](${src})` : ''),
+  );
+  s = s.replace(
+    /<img[^>]+alt="([^"]*)"[^>]+src="([^"]*)"[^>]*\/?>/gi,
+    (_, alt, src) => (src ? `![${alt || 'img'}](${src})` : ''),
+  );
+  // 没有 alt 属性的 img
+  s = s.replace(/<img[^>]+src="([^"]*)"[^>]*\/?>/gi, (_, src) => (src ? `![img](${src})` : ''));
 
-    // 4. 去除行内 HTML 标签（保留 ![img](url) 完整）
-    const processed = line.replace(/<\/?[a-zA-Z][^>]*>/g, '');
-    out.push(processed);
-  }
+  // 4. <a href="URL">text</a> → [text](URL)（只针对纯文本内容，嵌套 img 已在步骤 3 处理）
+  s = s.replace(/<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href, inner) => {
+    const text = inner.replace(/<[^>]+>/g, '').trim();
+    return text ? `[${text}](${href})` : '';
+  });
 
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  // 5. HTML 标题标签 → Markdown 标题
+  s = s.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, (_, c) => `\n# ${c.replace(/<[^>]+>/g, '').trim()}\n`);
+  s = s.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, (_, c) => `\n## ${c.replace(/<[^>]+>/g, '').trim()}\n`);
+  s = s.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, (_, c) => `\n### ${c.replace(/<[^>]+>/g, '').trim()}\n`);
+  s = s.replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, (_, c) => `\n#### ${c.replace(/<[^>]+>/g, '').trim()}\n`);
+
+  // 6. 段落/换行标签 → 空行/换行
+  s = s.replace(/<\/p>/gi, '\n');
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = s.replace(/<\/li>/gi, '\n');
+
+  // 7. 剥除剩余所有 HTML 标签（保留文字）
+  s = s.replace(/<[^>]+>/g, '');
+
+  // 8. 反转义常见 HTML 实体
+  s = s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ');
+
+  // 9. 清理多余空行
+  return s.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 /** Markdown 渲染区，兼容 Native（react-native-marked + 自定义 Renderer）和 Web（dangerouslySetInnerHTML） */
