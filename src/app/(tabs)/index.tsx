@@ -3,20 +3,20 @@ import { View, Text, Pressable, FlatList, ActivityIndicator } from 'react-native
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { searchRepos } from '@/lib/github';
+import { searchRepos, enrichAppsInBackground } from '@/lib/github';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
 import SkeletonCard from '@/components/openappstore/SkeletonCard';
 
 const CATEGORIES = [
-  { key: 'latest',  label: '最新',    icon: 'flash',            color: '#FF6B35', bg: '#FFF3E0', q: 'app release stars:>100 pushed:>2024-01-01' },
-  { key: 'rank',    label: '排行',    icon: 'trophy',           color: '#1677FF', bg: '#EBF3FF', q: 'app release stars:>1000' },
-  { key: 'android', label: 'Android', icon: 'logo-android',    color: '#3DDC84', bg: '#E8F5E9', q: 'android app apk stars:>100' },
-  { key: 'ios',     label: 'iOS',     icon: 'logo-apple',      color: '#1A1A1A', bg: '#F5F5F7', q: 'ios app ipa stars:>50' },
-  { key: 'windows', label: 'Windows', icon: 'logo-windows',    color: '#00A4EF', bg: '#E3F2FD', q: 'windows app stars:>100' },
-  { key: 'dev',     label: '开发',    icon: 'hammer',          color: '#9C27B0', bg: '#F3E5F5', q: 'developer tool app release stars:>100' },
-  { key: 'media',   label: '媒体',    icon: 'musical-notes',   color: '#E91E63', bg: '#FCE4EC', q: 'media player app release stars:>100' },
-  { key: 'game',    label: '游戏',    icon: 'game-controller',  color: '#FF5722', bg: '#FBE9E7', q: 'game app release stars:>100' },
+  { key: 'latest',  label: '最新',    icon: 'flash',            color: '#FF6B35', bg: '#FFF3E0', q: 'topic:android-app OR topic:ios-app OR topic:electron stars:>200 archived:false' },
+  { key: 'rank',    label: '排行',    icon: 'trophy',           color: '#1677FF', bg: '#EBF3FF', q: 'topic:android-app OR topic:ios-app stars:>2000 archived:false' },
+  { key: 'android', label: 'Android', icon: 'logo-android',    color: '#3DDC84', bg: '#E8F5E9', q: 'topic:android-app stars:>500 archived:false' },
+  { key: 'ios',     label: 'iOS',     icon: 'logo-apple',      color: '#1A1A1A', bg: '#F5F5F7', q: 'topic:ios-app stars:>200 archived:false' },
+  { key: 'windows', label: 'Windows', icon: 'logo-windows',    color: '#00A4EF', bg: '#E3F2FD', q: 'topic:windows stars:>200 archived:false' },
+  { key: 'dev',     label: '开发',    icon: 'hammer',          color: '#9C27B0', bg: '#F3E5F5', q: 'topic:cli OR topic:terminal stars:>500 archived:false' },
+  { key: 'media',   label: '媒体',    icon: 'musical-notes',   color: '#E91E63', bg: '#FCE4EC', q: 'topic:music-player OR topic:video-player stars:>200 archived:false' },
+  { key: 'game',    label: '游戏',    icon: 'game-controller',  color: '#FF5722', bg: '#FBE9E7', q: 'topic:game stars:>200 archived:false' },
 ] as const;
 
 export default function HomeTab() {
@@ -38,23 +38,29 @@ export default function HomeTab() {
       if (isRefresh) setRefreshing(true);
       else if (pageNum === 1) setLoading(true);
       const cat = CATEGORIES.find((c) => c.key === catKey) || CATEGORIES[0];
-      const { items } = await searchRepos(cat.q, { page: pageNum, per_page: 20, sort: 'stars', installableOnly: true });
+      // 首屏直接展示搜索结果，不阻塞等待安装包校验
+      const { items } = await searchRepos(cat.q, { page: pageNum, per_page: 20, sort: 'stars' });
       if (pageNum === 1) setApps(items);
       else setApps((prev) => [...prev, ...items]);
-      setHasMore(items.length > 0);
+      setHasMore(items.length >= 20);
+      // 后台静默补充版本/下载量信息，不影响已显示的列表
+      enrichAppsInBackground(items, (enriched) => {
+        if (pageNum === 1) setApps(enriched);
+        else setApps((prev) => [...prev.slice(0, prev.length - items.length), ...enriched]);
+      });
     } catch (e: any) {
-      console.warn('首页加载失败', e?.message || e);
-      if (pageNum === 1 && apps.length === 0) setError('网络连接失败，请下拉刷新重试');
+      setError(e?.message || '加载失败');
     } finally {
       setLoading(false);
       setRefreshing(false);
       loadingRef.current = false;
     }
-  }, [activeCategory, apps.length]);
+  }, [activeCategory]);
 
+  // 仅在「从未成功加载过且没有错误」时才自动触发，避免报错后反复闪烁重试
   useFocusEffect(useCallback(() => {
-    if (apps.length === 0) loadData(1, false);
-  }, [apps.length, loadData]));
+    if (apps.length === 0 && !error) loadData(1, false);
+  }, [apps.length, error, loadData]));
 
   const onCategoryPress = (key: string) => {
     setActiveCategory(key);
