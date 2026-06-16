@@ -10,6 +10,7 @@ import type { AppItem, GitHubRelease } from '@/types';
 import AppIcon from '@/components/openappstore/AppIcon';
 import PlatformTag from '@/components/openappstore/PlatformTag';
 import Marked, { Renderer } from 'react-native-marked';
+import { Image } from 'expo-image';
 import type { ImageStyle } from 'react-native';
 
 function formatBytes(bytes: number) {
