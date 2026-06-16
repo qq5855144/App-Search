@@ -2,13 +2,13 @@
 
 <div align="center">
 
-![Platform](https://img.shields.io/badge/Platform-iOS%20%7C%20Android%20%7C%20Web-2391FF?style=flat-square)
+![Runtime](https://img.shields.io/badge/Runtime-Expo%20App%20%7C%20Web-2391FF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Expo](https://img.shields.io/badge/Expo-55-blueviolet?style=flat-square)
 
 **发现、探索、安装优质开源应用**
 
-[iOS](#快速开始) · [Android](#快速开始) · [Web](#快速开始) · [Screenshot](#截图)
+[快速开始](#快速开始) · [功能](#特性) · [项目结构](#项目结构) · [截图](#截图)
 
 </div>
 
@@ -21,8 +21,10 @@
 - 按平台、应用类型、收藏量筛选
 - 搜索历史自动记录
 
-### 📱 多平台支持
-| 平台 | 支持格式 |
+### 📱 安装资产识别
+项目会从 GitHub Release 中识别常见安装包格式，方便用户找到可安装的开源应用。当前仓库尚未提供自身的 Android、iOS、Windows、macOS 或 Linux 安装包构建产物。
+
+| 目标平台 | 可识别格式 |
 |------|----------|
 | Android | APK |
 | iOS | IPA |
@@ -80,18 +82,20 @@ pnpm install
 pnpm start
 ```
 
-### 运行平台
+### 本地运行
 
 ```bash
-# iOS
+# iOS 模拟器
 pnpm ios
 
-# Android
+# Android 模拟器
 pnpm android
 
 # Web
 pnpm web
 ```
+
+> 说明：以上命令用于本地开发和预览，不代表项目已经发布了多平台安装包。如需发布安装包，需要另外配置 EAS Build 或对应平台的打包流程。
 
 ### 环境变量配置
 
