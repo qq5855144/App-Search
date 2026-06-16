@@ -12,8 +12,10 @@ import {
   clearSearchHistory,
 } from '@/lib/database';
 import { fetchRateLimit } from '@/lib/github';
+import { clearAllCache } from '@/lib/cache';
+import { getEventCounts } from '@/lib/events';
 
-type ConfirmTarget = 'downloads' | 'search' | 'token' | null;
+type ConfirmTarget = 'downloads' | 'search' | 'token' | 'cache' | null;
 
 export default function ProfileTab() {
   const router = useRouter();
@@ -30,21 +32,37 @@ export default function ProfileTab() {
   const [dlCount, setDlCount] = useState(0);
   const [histCount, setHistCount] = useState(0);
   const [rateLimit, setRateLimit] = useState({ remaining: 60, limit: 60, reset: 0 });
+  const [cacheSize, setCacheSize] = useState(0); // estimated KB
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [t, stats, dl, hist] = await Promise.all([
+      const [t, stats, dl, hist, evCounts] = await Promise.all([
         getToken(),
         getFavoriteStats(),
         getDownloadHistory(),
         getSearchHistory(),
+        getEventCounts(),
       ]);
       if (t) { setTokenState(t); setSaved(true); }
       setFavCount(stats.total);
-      setDlCount(dl.length);
-      setHistCount(hist.length);
+      // Use real event counts when available, fall back to local history lengths
+      setDlCount(evCounts.download > 0 ? evCounts.download : dl.length);
+      setHistCount(evCounts.search > 0 ? evCounts.search : hist.length);
       fetchRateLimit().then(setRateLimit).catch(() => {});
+      // Estimate cache size from localStorage keys
+      try {
+        if (typeof localStorage !== 'undefined') {
+          let totalBytes = 0;
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i) ?? '';
+            if (k.startsWith('oas_cache:')) {
+              totalBytes += (localStorage.getItem(k) ?? '').length * 2;
+            }
+          }
+          setCacheSize(Math.round(totalBytes / 1024));
+        }
+      } catch { /* non-web: skip */ }
     } catch { /* ignore */ } finally {
       setLoading(false);
     }
@@ -80,6 +98,9 @@ export default function ProfileTab() {
       setTokenState('');
       setSaved(false);
       setRateLimit({ remaining: 60, limit: 60, reset: 0 });
+    } else if (target === 'cache') {
+      await clearAllCache();
+      setCacheSize(0);
     }
   };
 
@@ -142,6 +163,7 @@ export default function ProfileTab() {
             <Text style={{ fontSize: 14, color: '#666', textAlign: 'center' }}>
               {confirmTarget === 'downloads' ? '将清空所有下载记录（不删除本地文件）' :
                confirmTarget === 'search' ? '将清空全部搜索历史' :
+               confirmTarget === 'cache' ? '将清除所有本地缓存，下次打开页面会重新请求数据' :
                '将删除已保存的 GitHub Token'}
             </Text>
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
@@ -190,11 +212,18 @@ export default function ProfileTab() {
             </>
           )}
           <Divider />
-          <Row
-            icon="flash-outline"
-            iconColor={rateColor}
-            label="API 配额"
+          <Row icon="flash-outline" iconColor={rateColor} label="API 配额"
             value={`${rateLimit.remaining}/${rateLimit.limit}  重置 ${resetTime}`}
+            onPress={() => Linking.openURL('https://docs.github.com/en/rest/overview/rate-limits-for-the-rest-api')}
+          />
+          <Divider />
+          <Row
+            icon="folder-outline"
+            iconColor="#FF8C00"
+            label="清除本地缓存"
+            value={cacheSize > 0 ? `${cacheSize} KB` : '已清空'}
+            onPress={() => setConfirmTarget('cache')}
+            trailingIcon="trash-outline"
           />
         </View>
 
