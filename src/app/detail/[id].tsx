@@ -250,6 +250,11 @@ function MarkdownSection({ content, owner, repo }: { content: string; owner: str
 export default function DetailScreen() {
   const { owner, repo } = useLocalSearchParams<{ owner: string; repo: string }>();
   const router = useRouter();
+  // 直接打开详情页时导航栈为空，canGoBack() 为 false → 回首页而非 back()
+  const goBack = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(tabs)');
+  };
   const [app, setApp] = useState<AppItem | null>(null);
   const [releases, setReleases] = useState<GitHubRelease[]>([]);
   const [readme, setReadme] = useState('');
@@ -303,7 +308,7 @@ export default function DetailScreen() {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: '#F5F6F8', alignItems: 'center', justifyContent: 'center', padding: 24 }} edges={['top']}>
         <Text style={{ color: '#d32f2f', fontSize: 16, textAlign: 'center', marginBottom: 20 }}>{error || '加载失败'}</Text>
-        <Pressable onPress={() => router.back()} style={{ backgroundColor: '#1677FF', paddingHorizontal: 24, paddingVertical: 10, borderRadius: 10 }}>
+        <Pressable onPress={goBack} style={{ backgroundColor: '#1677FF', paddingHorizontal: 24, paddingVertical: 10, borderRadius: 10 }}>
           <Text style={{ color: '#fff', fontWeight: '600' }}>返回</Text>
         </Pressable>
       </SafeAreaView>
@@ -315,7 +320,7 @@ export default function DetailScreen() {
       {/* Header */}
       <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12,
         backgroundColor: '#fff', borderBottomWidth: 0.5, borderBottomColor: '#EBEBEB' }}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={{ marginRight: 12 }}>
+        <Pressable onPress={goBack} hitSlop={12} style={{ marginRight: 12 }}>
           <Ionicons name="arrow-back" size={24} color="#1A1A1A" />
         </Pressable>
         <Text style={{ flex: 1, fontSize: 17, fontWeight: '600', color: '#1A1A1A' }} numberOfLines={1}>{app.name}</Text>
