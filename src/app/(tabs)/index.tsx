@@ -9,14 +9,14 @@ import AppCard from '@/components/openappstore/AppCard';
 import SkeletonCard from '@/components/openappstore/SkeletonCard';
 
 const CATEGORIES = [
-  { key: 'latest',  label: '最新',    icon: 'flash',            color: '#FF6B35', bg: '#FFF3E0', q: 'app release stars:>100 pushed:>2024-01-01' },
-  { key: 'rank',    label: '排行',    icon: 'trophy',           color: '#1677FF', bg: '#EBF3FF', q: 'app release stars:>1000' },
-  { key: 'android', label: 'Android', icon: 'logo-android',    color: '#3DDC84', bg: '#E8F5E9', q: 'android app apk stars:>100' },
-  { key: 'ios',     label: 'iOS',     icon: 'logo-apple',      color: '#1A1A1A', bg: '#F5F5F7', q: 'ios app ipa stars:>50' },
-  { key: 'windows', label: 'Windows', icon: 'logo-windows',    color: '#00A4EF', bg: '#E3F2FD', q: 'windows app exe msi stars:>100' },
-  { key: 'dev',     label: '开发',    icon: 'hammer',          color: '#9C27B0', bg: '#F3E5F5', q: 'developer tool app release stars:>100' },
-  { key: 'media',   label: '媒体',    icon: 'musical-notes',   color: '#E91E63', bg: '#FCE4EC', q: 'media player app release stars:>100' },
-  { key: 'game',    label: '游戏',    icon: 'game-controller',  color: '#FF5722', bg: '#FBE9E7', q: 'game app release stars:>100' },
+  { key: 'latest',  label: '最新',    icon: 'flash',            color: '#FF6B35', bg: '#FFF3E0', q: 'mobile app stars:>500 archived:false' },
+  { key: 'rank',    label: '排行',    icon: 'trophy',           color: '#1677FF', bg: '#EBF3FF', q: 'mobile app stars:>5000 archived:false' },
+  { key: 'android', label: 'Android', icon: 'logo-android',    color: '#3DDC84', bg: '#E8F5E9', q: 'android app stars:>1000 archived:false' },
+  { key: 'ios',     label: 'iOS',     icon: 'logo-apple',      color: '#1A1A1A', bg: '#F5F5F7', q: 'ios app stars:>500 archived:false' },
+  { key: 'windows', label: 'Windows', icon: 'logo-windows',    color: '#00A4EF', bg: '#E3F2FD', q: 'windows app stars:>500 archived:false' },
+  { key: 'dev',     label: '开发',    icon: 'hammer',          color: '#9C27B0', bg: '#F3E5F5', q: 'developer-tools stars:>1000 archived:false' },
+  { key: 'media',   label: '媒体',    icon: 'musical-notes',   color: '#E91E63', bg: '#FCE4EC', q: 'media-player stars:>500 archived:false' },
+  { key: 'game',    label: '游戏',    icon: 'game-controller',  color: '#FF5722', bg: '#FBE9E7', q: 'game stars:>500 archived:false' },
 ] as const;
 
 export default function HomeTab() {
@@ -38,10 +38,10 @@ export default function HomeTab() {
       if (isRefresh) setRefreshing(true);
       else if (pageNum === 1) setLoading(true);
       const cat = CATEGORIES.find((c) => c.key === catKey) || CATEGORIES[0];
-      const { items } = await searchRepos(cat.q, { page: pageNum, per_page: 20, sort: 'stars', installableOnly: true });
+      const { items } = await searchRepos(cat.q, { page: pageNum, per_page: 20, sort: 'stars' });
       if (pageNum === 1) setApps(items);
       else setApps((prev) => [...prev, ...items]);
-      setHasMore(items.length > 0);
+      setHasMore(items.length >= 20);
     } catch (e: any) {
       setError(e?.message || '加载失败');
     } finally {
