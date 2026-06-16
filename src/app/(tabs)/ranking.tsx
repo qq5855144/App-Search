@@ -187,7 +187,7 @@ export default function RankingScreen() {
 
   /** 搜索热词面板 */
   const renderKeywords = () => (
-    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
       {hotWords.length === 0 ? (
         <View style={{ alignItems: 'center', paddingTop: 60, gap: 10 }}>
           <Ionicons name="search-outline" size={48} color="#DDD" />
@@ -343,7 +343,7 @@ export default function RankingScreen() {
           refreshing={refreshing}
           onRefresh={() => { setRefreshing(true); loadRankings(rankType, period); }}
           style={{ marginHorizontal: 16, backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden' }}
-          contentContainerStyle={{ paddingBottom: 32 }}
+          contentContainerStyle={{ paddingBottom: 120 }}
         />
       )}
     </SafeAreaView>
