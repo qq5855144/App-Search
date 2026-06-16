@@ -310,7 +310,9 @@ export default function RankingScreen() {
       </View>
 
       {/* 榜单类型 Tabs */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 8, paddingBottom: 8 }}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}
+        style={{ flexShrink: 0 }}
+        contentContainerStyle={{ paddingHorizontal: 16, gap: 8, paddingBottom: 8 }}>
         {RANK_TABS.map((t) => (
           <Pressable
             key={t.key}
@@ -318,7 +320,7 @@ export default function RankingScreen() {
             android_ripple={{ color: '#F0F0F0' }}
             style={{
               flexDirection: 'row', alignItems: 'center', gap: 5,
-              paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20,
+              height: 40, paddingHorizontal: 16, borderRadius: 20,
               backgroundColor: rankType === t.key ? t.color : '#fff',
               ...(rankType !== t.key ? { boxShadow: [{ offsetX: 0, offsetY: 1, blurRadius: 3, color: 'rgba(0,0,0,0.06)' }] } : {}),
             } as any}
