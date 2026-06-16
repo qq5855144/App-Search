@@ -79,7 +79,9 @@ export default function RankingScreen() {
           .order('rank_position', { ascending: true })
           .limit(50);
         if (error) throw error;
-        setItems(Array.isArray(data) ? data : []);
+        // 过滤掉 app_id=0 或名称/owner 均为空的无效记录
+        const valid = Array.isArray(data) ? data.filter((r: any) => r.app_id > 0 || r.app_name || r.owner) : [];
+        setItems(valid);
         setHotWords([]);
         if (data && data.length > 0) {
           const ts = new Date((data[0] as any).updated_at);
@@ -242,8 +244,8 @@ export default function RankingScreen() {
 
       {/* 榜单类型 Tabs */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false}
-        style={{ flexShrink: 0 }}
-        contentContainerStyle={{ paddingHorizontal: 16, gap: 8, paddingBottom: 8 }}>
+        style={{ flexShrink: 0, height: 56 }}
+        contentContainerStyle={{ paddingHorizontal: 16, gap: 8, paddingBottom: 8, alignItems: 'center' }}>
         {RANK_TABS.map((t) => (
           <Pressable
             key={t.key}
