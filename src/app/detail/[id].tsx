@@ -280,7 +280,7 @@ export default function DetailScreen() {
         })).filter((r) => r.assets.length > 0);
         setReleases(installRels);
         if (installRels.length > 0) setExpandedRelease(installRels[0].id);
-        setReadme(md.slice(0, 12000)); // 扩大到 12000 字符，覆盖大多数 README
+        setReadme(md); // 不限制字数，完整渲染 README
         const f = await isFavorite(detail.id).catch(() => false);
         setFavored(f);
       } catch (e: any) {
