@@ -125,7 +125,7 @@ export default function RankingsScreen() {
 
   const renderRankBadge = (index: number) => {
     const colors = ['#FFD700', '#C0C0C0', '#CD7F32'];
-    const icons = ['🥇', '🥈', '🥉'];
+    const trophyColors = ['#B8860B', '#808080', '#8B4513'];
     if (index >= 3) return null;
     return (
       <View
@@ -140,12 +140,10 @@ export default function RankingsScreen() {
           alignItems: 'center',
           justifyContent: 'center',
           zIndex: 10,
-          shadowColor: 'rgba(0,0,0,0.2)',
-          shadowOffset: { width: 0, height: 2 },
-          shadowRadius: 4,
+          boxShadow: [{ offsetX: 0, offsetY: 2, blurRadius: 4, color: 'rgba(0,0,0,0.2)' }],
         }}
       >
-        <Text style={{ fontSize: 14 }}>{icons[index]}</Text>
+        <Ionicons name="trophy" size={16} color={trophyColors[index]} />
       </View>
     );
   };
