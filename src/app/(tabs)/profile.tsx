@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { View, Text, TextInput, Pressable, ScrollView, ActivityIndicator, Linking, Platform } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -20,6 +20,7 @@ export default function ProfileTab() {
 
   const [token, setTokenState] = useState('');
   const [showToken, setShowToken] = useState(false);
+  const tokenInputRef = useRef<TextInput>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -214,17 +215,18 @@ export default function ProfileTab() {
           </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#F7F7F7', borderRadius: 10, paddingHorizontal: 12, height: 44, marginBottom: 12 }}>
             <TextInput
+              ref={tokenInputRef}
               style={{ flex: 1, fontSize: 14, color: '#1A1A1A' } as any}
               value={token}
               onChangeText={setTokenState}
               placeholder="github_pat_..."
               placeholderTextColor="#BBB"
               secureTextEntry={!showToken}
-              keyboardType={showToken ? 'visible-password' : 'default'}
+              textContentType="none"
               autoCapitalize="none"
               autoCorrect={false}
             />
-            <Pressable onPress={() => setShowToken((v) => !v)} hitSlop={8}>
+            <Pressable onPress={() => { tokenInputRef.current?.blur(); setShowToken((v) => !v); setTimeout(() => tokenInputRef.current?.focus(), 50); }} hitSlop={8}>
               <Ionicons name={showToken ? 'eye-off-outline' : 'eye-outline'} size={18} color="#AAA" />
             </Pressable>
           </View>
