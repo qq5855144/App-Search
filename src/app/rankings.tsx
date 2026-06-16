@@ -5,7 +5,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { searchRepos } from '@/lib/github';
 import type { AppItem } from '@/types';
+<<<<<<< Updated upstream
 import { getTopAppsByScore, getPopularKeywords, type TimeRange } from '@/lib/events';
+=======
+import { getTopApps, getPopularKeywords, type TimeRange } from '@/lib/events';
+>>>>>>> Stashed changes
 import AppCard from '@/components/openappstore/AppCard';
 
 type RankType = 'hot' | 'download' | 'star' | 'trending';
@@ -37,6 +41,7 @@ export default function RankingsScreen() {
 
   const loadLocalRanks = useCallback(async () => {
     try {
+<<<<<<< Updated upstream
       const ranks = await getTopAppsByScore(30, activeTimeRange);
       setLocalRanks(ranks.map((rank) => ({
         app_id: rank.app_id,
@@ -55,6 +60,33 @@ export default function RankingsScreen() {
     try {
       const keywords = await getPopularKeywords(8, activeTimeRange);
       setPopularKeywords(keywords);
+=======
+      const ranks = await getTopApps(30, activeTimeRange);
+      const appMap = new Map<number, { name: string; owner: string; repo: string }>();
+      const enhancedRanks = ranks.map((rank) => {
+        const eventApp = localApps.get(rank.app_id);
+        return {
+          ...rank,
+          app_name: eventApp?.name,
+          owner: eventApp?.owner,
+          repo: eventApp?.repo,
+        };
+      });
+      setLocalRanks(enhancedRanks);
+    } catch {
+      setLocalRanks([]);
+    }
+  }, [activeTimeRange, localApps]);
+
+  const loadKeywords = useCallback(async () => {
+    try {
+      const keywords = await getPopularKeywords(10, activeTimeRange);
+      const list = Object.entries(keywords)
+        .map(([keyword, stats]) => ({ keyword, count: stats.count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 8);
+      setPopularKeywords(list);
+>>>>>>> Stashed changes
     } catch {
       setPopularKeywords([]);
     }
@@ -125,7 +157,11 @@ export default function RankingsScreen() {
 
   const renderRankBadge = (index: number) => {
     const colors = ['#FFD700', '#C0C0C0', '#CD7F32'];
+<<<<<<< Updated upstream
     const trophyColors = ['#B8860B', '#808080', '#8B4513'];
+=======
+    const icons = ['🥇', '🥈', '🥉'];
+>>>>>>> Stashed changes
     if (index >= 3) return null;
     return (
       <View
@@ -140,10 +176,19 @@ export default function RankingsScreen() {
           alignItems: 'center',
           justifyContent: 'center',
           zIndex: 10,
+<<<<<<< Updated upstream
           boxShadow: [{ offsetX: 0, offsetY: 2, blurRadius: 4, color: 'rgba(0,0,0,0.2)' }],
         }}
       >
         <Ionicons name="trophy" size={16} color={trophyColors[index]} />
+=======
+          shadowColor: 'rgba(0,0,0,0.2)',
+          shadowOffset: { width: 0, height: 2 },
+          shadowRadius: 4,
+        }}
+      >
+        <Text style={{ fontSize: 14 }}>{icons[index]}</Text>
+>>>>>>> Stashed changes
       </View>
     );
   };
@@ -205,6 +250,8 @@ export default function RankingsScreen() {
                     backgroundColor: activeRank === rank.key ? `${rank.color}1A` : '#fff',
                     borderWidth: 1.5,
                     borderColor: activeRank === rank.key ? rank.color : '#E0E0E0',
+                    transitionProperty: 'all',
+                    transitionDuration: 200,
                   }}
                 >
                   <Ionicons

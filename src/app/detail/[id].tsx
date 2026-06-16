@@ -3,7 +3,6 @@ import { View, Text, Pressable, ScrollView, ActivityIndicator, Linking, Platform
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { fetchRepoDetail, fetchReleases, fetchReadme, getPlatformFromFilename, filterInstallAssets, filterVerificationAssets } from '@/lib/github';
 import { addFavorite, removeFavorite, isFavorite, addDownloadRecord } from '@/lib/database';
 import { addAppEvent } from '@/lib/events';

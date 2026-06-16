@@ -37,6 +37,29 @@ function getTimeRangeFilter(range: TimeRange): number {
   return startTime;
 }
 
+export type TimeRange = 'day' | 'week' | 'month' | 'all';
+
+function getTimeRangeFilter(range: TimeRange): string {
+  const now = new Date();
+  let startDate: Date;
+  
+  switch (range) {
+    case 'day':
+      startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      break;
+    case 'week':
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      break;
+    case 'month':
+      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      break;
+    default:
+      return '';
+  }
+  
+  return startDate.toISOString();
+}
+
 export interface AppEvent {
   id: string
   event_type: EventType
@@ -100,6 +123,7 @@ export async function addAppEvent(event: Omit<AppEvent, 'id' | 'created_at'>): P
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       created_at: Date.now(),
     }
+<<<<<<< Updated upstream
     if (IS_WEB) {
       const all = webReadAll()
       all.unshift(newEvent)
@@ -108,6 +132,141 @@ export async function addAppEvent(event: Omit<AppEvent, 'id' | 'created_at'>): P
       const all = await nativeReadAll()
       all.unshift(newEvent)
       await nativeWriteAll(all.slice(0, MAX_EVENTS))
+=======
+  } catch {
+    // ignore
+  }
+}
+
+const g = globalThis as any;
+
+async function getNativeDb() {
+  if (IS_WEB) return Promise.resolve(null);
+  if (!g.__oas_events_db) {
+    g.__oas_events_db = import('expo-sqlite').then(({ openDatabaseAsync }) =>
+      openDatabaseAsync('oas_events.db')
+    ).then(async (db) => {
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS app_events (
+          id TEXT PRIMARY KEY,
+          app_id INTEGER,
+          app_name TEXT,
+          owner TEXT,
+          repo TEXT,
+          event_type TEXT NOT NULL,
+          keyword TEXT,
+          platform TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_app_events_app_id ON app_events(app_id);
+        CREATE INDEX IF NOT EXISTS idx_app_events_type ON app_events(event_type);
+        CREATE INDEX IF NOT EXISTS idx_app_events_created ON app_events(created_at);
+      `);
+      return db;
+    });
+  }
+  return g.__oas_events_db;
+}
+
+export async function recordAppEvent(event: {
+  app_id?: number;
+  app_name?: string;
+  owner?: string;
+  repo?: string;
+  event_type: EventType;
+  keyword?: string;
+  platform?: string;
+}): Promise<void> {
+  const record: AppEvent = {
+    id: String(Date.now()) + '_' + Math.random().toString(36).slice(2, 8),
+    ...event,
+    created_at: new Date().toISOString(),
+  };
+
+  if (IS_WEB) {
+    const events = webGet<AppEvent[]>('oas_app_events', []);
+    events.unshift(record);
+    webSet('oas_app_events', events.slice(0, 500));
+    return;
+  }
+
+  const db = await getNativeDb();
+  if (!db) return;
+
+  await db.runAsync(
+    `INSERT INTO app_events (id, app_id, app_name, owner, repo, event_type, keyword, platform, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      record.id,
+      record.app_id,
+      record.app_name,
+      record.owner,
+      record.repo,
+      record.event_type,
+      record.keyword,
+      record.platform,
+      record.created_at,
+    ]
+  );
+}
+
+export async function getEventStats(appId?: number, timeRange: TimeRange = 'all'): Promise<EventStats> {
+  const timeFilter = getTimeRangeFilter(timeRange);
+
+  if (IS_WEB) {
+    const events = webGet<AppEvent[]>('oas_app_events', []);
+    let filtered = appId ? events.filter((e) => e.app_id === appId) : events;
+    if (timeFilter) {
+      filtered = filtered.filter((e) => e.created_at >= timeFilter);
+    }
+    return calculateStats(filtered);
+  }
+
+  const db = await getNativeDb();
+  if (!db) return {};
+
+  let query: string;
+  let params: any[];
+
+  if (appId && timeFilter) {
+    query = 'SELECT * FROM app_events WHERE app_id = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 500';
+    params = [appId, timeFilter];
+  } else if (appId) {
+    query = 'SELECT * FROM app_events WHERE app_id = ? ORDER BY created_at DESC LIMIT 500';
+    params = [appId];
+  } else if (timeFilter) {
+    query = 'SELECT * FROM app_events WHERE created_at >= ? ORDER BY created_at DESC LIMIT 500';
+    params = [timeFilter];
+  } else {
+    query = 'SELECT * FROM app_events ORDER BY created_at DESC LIMIT 500';
+    params = [];
+  }
+
+  const rows = await db.getAllAsync(query, params) as any[];
+  const events: AppEvent[] = rows.map((r: any) => ({
+    id: r.id,
+    app_id: r.app_id,
+    app_name: r.app_name,
+    owner: r.owner,
+    repo: r.repo,
+    event_type: r.event_type as EventType,
+    keyword: r.keyword,
+    platform: r.platform,
+    created_at: r.created_at,
+  }));
+
+  return calculateStats(events);
+}
+
+function calculateStats(events: AppEvent[]): EventStats {
+  const stats: EventStats = {};
+
+  for (const event of events) {
+    if (!event.app_id) continue;
+
+    if (!stats[event.app_id]) {
+      stats[event.app_id] = { views: 0, downloads: 0, favorites: 0 };
+>>>>>>> Stashed changes
     }
   } catch { /* never throw */ }
 }
@@ -199,6 +358,7 @@ export async function getTopAppsByScore(
     .slice(0, limit);
 }
 
+<<<<<<< Updated upstream
 /**
  * Returns popular search keywords from local events.
  * Supports time range filtering.
@@ -215,6 +375,22 @@ export async function getPopularKeywords(
     const kw = e.keyword.toLowerCase().trim();
     if (kw.length < 2) continue;
     stats.set(kw, (stats.get(kw) || 0) + 1);
+=======
+export async function getTopApps(limit: number = 20, timeRange: TimeRange = 'all'): Promise<{ app_id: number; score: number; views: number; downloads: number; favorites: number }[]> {
+  const stats = await getEventStats(undefined, timeRange);
+  const results: { app_id: number; score: number; views: number; downloads: number; favorites: number }[] = [];
+
+  for (const appId of Object.keys(stats)) {
+    const appStats = stats[parseInt(appId)];
+    const score = appStats.downloads * 5 + appStats.views * 1 + appStats.favorites * 3;
+    results.push({
+      app_id: parseInt(appId),
+      score,
+      views: appStats.views,
+      downloads: appStats.downloads,
+      favorites: appStats.favorites,
+    });
+>>>>>>> Stashed changes
   }
   
   return Array.from(stats.entries())
@@ -223,6 +399,7 @@ export async function getPopularKeywords(
     .slice(0, limit);
 }
 
+<<<<<<< Updated upstream
 /** Clear all local events (e.g. from settings). */
 export async function clearAllEvents(): Promise<void> {
   if (IS_WEB) { webWriteAll([]); return }
@@ -248,6 +425,56 @@ async function getOrCreateDeviceId(): Promise<string> {
     } else {
       const AS = await getAS()
       await AS?.setItem(DEVICE_ID_KEY, id)
+=======
+export async function getPopularKeywords(limit: number = 10, timeRange: TimeRange = 'all'): Promise<KeywordStats> {
+  const timeFilter = getTimeRangeFilter(timeRange);
+
+  if (IS_WEB) {
+    let events = webGet<AppEvent[]>('oas_app_events', []);
+    if (timeFilter) {
+      events = events.filter((e) => e.created_at >= timeFilter);
+    }
+    return calculateKeywordStats(events);
+  }
+
+  const db = await getNativeDb();
+  if (!db) return {};
+
+  let query: string;
+  let params: any[];
+
+  if (timeFilter) {
+    query = 'SELECT keyword, created_at FROM app_events WHERE event_type = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 500';
+    params = ['search', timeFilter];
+  } else {
+    query = 'SELECT keyword, created_at FROM app_events WHERE event_type = ? ORDER BY created_at DESC LIMIT 500';
+    params = ['search'];
+  }
+
+  const rows = await db.getAllAsync(query, params) as { keyword: string; created_at: string }[];
+
+  const events: AppEvent[] = rows.map((r) => ({
+    id: '',
+    event_type: 'search',
+    keyword: r.keyword,
+    created_at: r.created_at,
+  }));
+
+  return calculateKeywordStats(events);
+}
+
+function calculateKeywordStats(events: AppEvent[]): KeywordStats {
+  const stats: KeywordStats = {};
+
+  for (const event of events) {
+    if (!event.keyword) continue;
+
+    const keyword = event.keyword.toLowerCase().trim();
+    if (!keyword || keyword.length < 2) continue;
+
+    if (!stats[keyword]) {
+      stats[keyword] = { count: 0, last_searched: '' };
+>>>>>>> Stashed changes
     }
   }
   return id

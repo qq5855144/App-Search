@@ -4,6 +4,7 @@ import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { searchRepos, enrichAppsInBackground } from '@/lib/github';
+import { clearCache } from '@/lib/cache';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
 import SkeletonCard from '@/components/openappstore/SkeletonCard';
@@ -59,6 +60,7 @@ export default function DiscoverTab() {
   const [sort, setSort] = useState<string>('stars');
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
+  const [error, setError] = useState<string>('');
   const loadingRef = useRef(false);
 
   const loadData = useCallback(async (
@@ -67,12 +69,15 @@ export default function DiscoverTab() {
   ) => {
     if (loadingRef.current && !isRefresh) return;
     loadingRef.current = true;
+    setError('');
     try {
       if (isRefresh) setRefreshing(true);
       else if (pageNum === 1) setLoading(true);
       const q = buildQuery(p, cat);
+      console.log(`[Discover] Loading query: ${q}`);
       // 首屏直接展示搜索结果，不阻塞等待安装包校验
       const { items } = await searchRepos(q, { page: pageNum, per_page: 20, sort: s });
+      console.log(`[Discover] Loaded ${items.length} items`);
       if (pageNum === 1) setApps(items);
       else setApps((prev) => [...prev, ...items]);
       setHasMore(items.length >= 20);
@@ -81,12 +86,22 @@ export default function DiscoverTab() {
         if (pageNum === 1) setApps(enriched);
         else setApps((prev) => [...prev.slice(0, prev.length - items.length), ...enriched]);
       });
-    } catch { /* ignore */ } finally {
+    } catch (e: any) {
+      console.warn('[Discover] Load failed:', e);
+      setError(e?.message || '加载失败，请检查网络后重试');
+    } finally {
       setLoading(false);
       setRefreshing(false);
       loadingRef.current = false;
     }
   }, [platform, category, sort]);
+
+  const handleClearCacheAndReload = async () => {
+    await clearCache();
+    setPage(1);
+    setApps([]);
+    loadData(1, false);
+  };
 
   useFocusEffect(useCallback(() => {
     if (apps.length === 0) loadData(1, false);
@@ -172,10 +187,37 @@ export default function DiscoverTab() {
         }
         ListEmptyComponent={
           loading
-            ? <View>{[1,2,3,4].map((i) => <SkeletonCard key={i} />)}</View>
-            : <View style={{ alignItems: 'center', paddingTop: 60 }}>
-                <Ionicons name="compass-outline" size={48} color="#CCC" />
-                <Text style={{ color: '#AAA', marginTop: 8 }}>暂无数据</Text>
+            ? <View style={{ padding: 16 }}>{[1,2,3,4].map((i) => <SkeletonCard key={i} />)}</View>
+            : <View style={{ alignItems: 'center', paddingTop: 60, paddingHorizontal: 32 }}>
+                <View style={{
+                  width: 80, height: 80, borderRadius: 80,
+                  backgroundColor: error ? '#FFF2F0' : '#F5F5F5',
+                  alignItems: 'center', justifyContent: 'center', marginBottom: 16,
+                }}>
+                  <Ionicons name={error ? 'alert-circle-outline' : 'compass-outline'} size={40} color={error ? '#FF4D4F' : '#CCC'} />
+                </View>
+                {error ? (
+                  <>
+                    <Text style={{ color: '#FF4D4F', fontSize: 14, textAlign: 'center', marginBottom: 12 }}>{error}</Text>
+                    <Pressable
+                      onPress={handleClearCacheAndReload}
+                      style={{ paddingHorizontal: 20, paddingVertical: 10, backgroundColor: '#1677FF', borderRadius: 20 }}
+                    >
+                      <Text style={{ color: '#fff', fontWeight: '600' }}>清除缓存并重试</Text>
+                    </Pressable>
+                  </>
+                ) : (
+                  <>
+                    <Text style={{ color: '#AAA', fontSize: 15, textAlign: 'center' }}>暂无数据</Text>
+                    <Text style={{ color: '#CCC', fontSize: 13, textAlign: 'center', marginTop: 4 }}>下拉刷新或切换筛选条件</Text>
+                    <Pressable
+                      onPress={handleClearCacheAndReload}
+                      style={{ marginTop: 16, paddingHorizontal: 20, paddingVertical: 10, backgroundColor: '#F5F5F5', borderRadius: 20 }}
+                    >
+                      <Text style={{ color: '#666', fontSize: 13 }}>清除缓存重试</Text>
+                    </Pressable>
+                  </>
+                )}
               </View>
         }
         ListFooterComponent={

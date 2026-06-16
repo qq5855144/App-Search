@@ -45,6 +45,7 @@ async function searchGitHubDirect(
   q: string,
   options: { sort?: string; order?: string; page?: number; per_page?: number } = {}
 ): Promise<{ items: AppItem[]; total_count: number }> {
+  console.log('[GitHub] Using direct API for query:', q);
   const params = new URLSearchParams({
     q,
     sort: options.sort || 'stars',
@@ -58,9 +59,15 @@ async function searchGitHubDirect(
   }
   if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
   const res = await fetch(`${GITHUB_API}/search/repositories?${params}`, { headers })
-  if (!res.ok) throw new Error(`GitHub API 请求失败 (${res.status})`)
+  console.log('[GitHub] Direct API response status:', res.status);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    console.warn('[GitHub] API error:', res.status, text);
+    throw new Error(`GitHub API 请求失败 (${res.status})`)
+  }
   const json = await res.json()
   const items = (json.items || []).map((item: any) => mapRepoToApp(item))
+  console.log('[GitHub] Direct API returned', items.length, 'items');
   return { items, total_count: json.total_count || 0 }
 }
 
@@ -75,21 +82,28 @@ export async function searchRepos(
   const cacheKey = searchCacheKey(q, sort, order, page, perPage)
   const ttl = 6 * HOUR
 
-  // Return cached result immediately if available
+  // Return cached result immediately if available (even if empty, we still want to show it)
   const cached = await getCache<{ items: AppItem[]; total_count: number }>(cacheKey)
   if (cached) {
     // Refresh in background without blocking
     ;(async () => {
       try {
         const fresh = await _fetchSearchRepos(q, sort, order, page, perPage)
-        await setCache(cacheKey, fresh, ttl)
-      } catch { /* silent */ }
+        if (fresh.items.length > 0) {
+          await setCache(cacheKey, fresh, ttl)
+        }
+      } catch (e) {
+        console.warn('[GitHub] Background refresh failed:', e)
+      }
     })()
     return cached
   }
 
   const result = await _fetchSearchRepos(q, sort, order, page, perPage)
-  await setCache(cacheKey, result, ttl)
+  // Only cache non-empty results
+  if (result.items.length > 0) {
+    await setCache(cacheKey, result, ttl)
+  }
   return result
 }
 
