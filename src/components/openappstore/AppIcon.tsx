@@ -23,7 +23,8 @@ function isValidHttpUrl(s: string): boolean {
 
 function ensureAvatarUrl(url: string | null | undefined, owner: string): string | null {
   if (url && isValidHttpUrl(url)) return url;
-  if (owner) return `https://github.com/${owner}.png`;
+  // 直接使用 GitHub 用户名头像 URL（无需数字 ID，稳定可用）
+  if (owner) return `https://github.com/${owner}.png?size=120`;
   return null;
 }
 
