@@ -7,21 +7,20 @@ import { saveToken, getToken, clearToken } from '@/lib/token';
 import {
   getFavoriteStats,
   getDownloadHistory,
-  getSearchHistory,
   clearDownloadHistory,
-  clearSearchHistory,
 } from '@/lib/database';
 import { fetchRateLimit } from '@/lib/github';
 import { clearAllCache } from '@/lib/cache';
 import { getEventCounts } from '@/lib/events';
 
-type ConfirmTarget = 'downloads' | 'search' | 'token' | 'cache' | null;
+type ConfirmTarget = 'downloads' | 'token' | 'cache' | null;
 
 export default function ProfileTab() {
   const router = useRouter();
 
   const [token, setTokenState] = useState('');
   const [showToken, setShowToken] = useState(false);
+  const [tokenExpanded, setTokenExpanded] = useState(false);
   const tokenInputRef = useRef<TextInput>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -30,25 +29,22 @@ export default function ProfileTab() {
 
   const [favCount, setFavCount] = useState(0);
   const [dlCount, setDlCount] = useState(0);
-  const [histCount, setHistCount] = useState(0);
   const [rateLimit, setRateLimit] = useState({ remaining: 60, limit: 60, reset: 0 });
   const [cacheSize, setCacheSize] = useState(0); // estimated KB
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [t, stats, dl, hist, evCounts] = await Promise.all([
+      const [t, stats, dl, evCounts] = await Promise.all([
         getToken(),
         getFavoriteStats(),
         getDownloadHistory(),
-        getSearchHistory(),
         getEventCounts(),
       ]);
       if (t) { setTokenState(t); setSaved(true); }
       setFavCount(stats.total);
       // Use real event counts when available, fall back to local history lengths
       setDlCount(evCounts.download > 0 ? evCounts.download : dl.length);
-      setHistCount(evCounts.search > 0 ? evCounts.search : hist.length);
       fetchRateLimit().then(setRateLimit).catch(() => {});
       // Estimate cache size from localStorage keys
       try {
@@ -90,9 +86,6 @@ export default function ProfileTab() {
     if (target === 'downloads') {
       await clearDownloadHistory();
       setDlCount(0);
-    } else if (target === 'search') {
-      await clearSearchHistory();
-      setHistCount(0);
     } else if (target === 'token') {
       await clearToken();
       setTokenState('');
@@ -162,7 +155,6 @@ export default function ProfileTab() {
             <Text style={{ fontSize: 17, fontWeight: '700', color: '#1A1A1A', textAlign: 'center' }}>确认清空</Text>
             <Text style={{ fontSize: 14, color: '#666', textAlign: 'center' }}>
               {confirmTarget === 'downloads' ? '将清空所有下载记录（不删除本地文件）' :
-               confirmTarget === 'search' ? '将清空全部搜索历史' :
                confirmTarget === 'cache' ? '将清除所有本地缓存，下次打开页面会重新请求数据' :
                '将删除已保存的 GitHub Token'}
             </Text>
@@ -202,16 +194,6 @@ export default function ProfileTab() {
             </>
           )}
           <Divider />
-          <Row icon="time-outline" iconColor="#FF8C00" label="搜索历史" value={`${histCount} 条`}
-            onPress={() => router.push('/search-history' as any)} />
-          {histCount > 0 && (
-            <>
-              <Divider />
-              <Row icon="trash-outline" iconColor="#f5222d" label="清空搜索历史" danger
-                onPress={() => setConfirmTarget('search')} trailingIcon="trash-outline" />
-            </>
-          )}
-          <Divider />
           <Row icon="flash-outline" iconColor={rateColor} label="API 配额"
             value={`${rateLimit.remaining}/${rateLimit.limit}  重置 ${resetTime}`}
             onPress={() => Linking.openURL('https://docs.github.com/en/rest/overview/rate-limits-for-the-rest-api')}
@@ -229,58 +211,70 @@ export default function ProfileTab() {
 
         {/* Token 管理 */}
         <SectionTitle title="GitHub Token" />
-        <View style={{ marginHorizontal: 16, backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 16 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-            <Ionicons name="key-outline" size={18} color="#1677FF" />
-            <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A', flex: 1 }}>Personal Access Token</Text>
+        <View style={{ marginHorizontal: 16, backgroundColor: '#fff', borderRadius: 16, marginBottom: 16, overflow: 'hidden' }}>
+          {/* 折叠头部行——与其它功能栏等高 */}
+          <Pressable
+            onPress={() => setTokenExpanded((v) => !v)}
+            android_ripple={{ color: '#F0F0F0' }}
+            style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, gap: 10 }}
+          >
+            <Ionicons name="key-outline" size={20} color="#1677FF" />
+            <Text style={{ flex: 1, fontSize: 15, fontWeight: '600', color: '#1A1A1A' }}>Personal Access Token</Text>
             {saved && (
-              <View style={{ backgroundColor: '#F6FFED', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: '#B7EB8F' }}>
+              <View style={{ backgroundColor: '#F6FFED', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2, borderWidth: 1, borderColor: '#B7EB8F', marginRight: 4 }}>
                 <Text style={{ fontSize: 11, color: '#52C41A' }}>已配置</Text>
               </View>
             )}
-          </View>
-          <Text style={{ fontSize: 12, color: '#999', marginBottom: 12 }}>
-            配置后 API 请求上限从 60→5000 次/小时
-          </Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#F7F7F7', borderRadius: 10, paddingHorizontal: 12, height: 44, marginBottom: 12 }}>
-            <TextInput
-              ref={tokenInputRef}
-              style={{ flex: 1, fontSize: 14, color: '#1A1A1A' } as any}
-              value={token}
-              onChangeText={setTokenState}
-              placeholder="github_pat_..."
-              placeholderTextColor="#BBB"
-              secureTextEntry={!showToken}
-              textContentType="none"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <Pressable onPress={() => { tokenInputRef.current?.blur(); setShowToken((v) => !v); setTimeout(() => tokenInputRef.current?.focus(), 50); }} hitSlop={8}>
-              <Ionicons name={showToken ? 'eye-off-outline' : 'eye-outline'} size={18} color="#AAA" />
-            </Pressable>
-          </View>
-          <View style={{ flexDirection: 'row', gap: 10 }}>
-            <Pressable
-              onPress={handleSave}
-              disabled={token.trim().length < 10 || saving}
-              style={{ flex: 1, height: 42, borderRadius: 10, backgroundColor: token.trim().length >= 10 ? '#1677FF' : '#E0E0E0', alignItems: 'center', justifyContent: 'center' }}
-            >
-              {saving ? <ActivityIndicator color="#fff" size="small" /> : <Text style={{ color: '#fff', fontWeight: '600' }}>保存</Text>}
-            </Pressable>
-            <Pressable
-              onPress={() => Linking.openURL('https://github.com/settings/tokens/new')}
-              style={{ height: 42, paddingHorizontal: 14, borderRadius: 10, borderWidth: 1, borderColor: '#D0D0D0', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 4 }}
-            >
-              <Ionicons name="open-outline" size={14} color="#555" />
-              <Text style={{ color: '#555', fontSize: 13 }}>创建</Text>
-            </Pressable>
-            {saved && (
-              <Pressable onPress={() => setConfirmTarget('token')}
-                style={{ height: 42, paddingHorizontal: 14, borderRadius: 10, borderWidth: 1, borderColor: '#FFB3B3', alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ color: '#f5222d', fontSize: 13 }}>清除</Text>
-              </Pressable>
-            )}
-          </View>
+            <Ionicons name={tokenExpanded ? 'chevron-up' : 'chevron-down'} size={16} color="#BBB" />
+          </Pressable>
+
+          {/* 展开内容 */}
+          {tokenExpanded && (
+            <View style={{ paddingHorizontal: 16, paddingBottom: 16, borderTopWidth: 0.5, borderTopColor: '#F0F0F0' }}>
+              <Text style={{ fontSize: 12, color: '#999', marginTop: 10, marginBottom: 12 }}>
+                配置后 API 请求上限从 60→5000 次/小时
+              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#F7F7F7', borderRadius: 10, paddingHorizontal: 12, height: 44, marginBottom: 12 }}>
+                <TextInput
+                  ref={tokenInputRef}
+                  style={{ flex: 1, fontSize: 14, color: '#1A1A1A' } as any}
+                  value={token}
+                  onChangeText={setTokenState}
+                  placeholder="github_pat_..."
+                  placeholderTextColor="#BBB"
+                  secureTextEntry={!showToken}
+                  textContentType="none"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <Pressable onPress={() => { tokenInputRef.current?.blur(); setShowToken((v) => !v); setTimeout(() => tokenInputRef.current?.focus(), 50); }} hitSlop={8}>
+                  <Ionicons name={showToken ? 'eye-off-outline' : 'eye-outline'} size={18} color="#AAA" />
+                </Pressable>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <Pressable
+                  onPress={handleSave}
+                  disabled={token.trim().length < 10 || saving}
+                  style={{ flex: 1, height: 42, borderRadius: 10, backgroundColor: token.trim().length >= 10 ? '#1677FF' : '#E0E0E0', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  {saving ? <ActivityIndicator color="#fff" size="small" /> : <Text style={{ color: '#fff', fontWeight: '600' }}>保存</Text>}
+                </Pressable>
+                <Pressable
+                  onPress={() => Linking.openURL('https://github.com/settings/tokens/new')}
+                  style={{ height: 42, paddingHorizontal: 14, borderRadius: 10, borderWidth: 1, borderColor: '#D0D0D0', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 4 }}
+                >
+                  <Ionicons name="open-outline" size={14} color="#555" />
+                  <Text style={{ color: '#555', fontSize: 13 }}>创建</Text>
+                </Pressable>
+                {saved && (
+                  <Pressable onPress={() => setConfirmTarget('token')}
+                    style={{ height: 42, paddingHorizontal: 14, borderRadius: 10, borderWidth: 1, borderColor: '#FFB3B3', alignItems: 'center', justifyContent: 'center' }}>
+                    <Text style={{ color: '#f5222d', fontSize: 13 }}>清除</Text>
+                  </Pressable>
+                )}
+              </View>
+            </View>
+          )}
         </View>
 
         {/* 关于 */}
