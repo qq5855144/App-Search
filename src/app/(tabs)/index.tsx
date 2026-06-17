@@ -3,67 +3,58 @@ import { View, Text, Pressable, FlatList, ActivityIndicator } from 'react-native
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { LOCAL_CATALOG, filterByPlatform, filterByTopic } from '@/lib/catalog';
+import { supabase } from '@/client/supabase';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
 import SkeletonCard from '@/components/openappstore/SkeletonCard';
 
-const PAGE_SIZE = 20;
-
 const CATEGORIES: {
   key: string; label: string; icon: string; color: string; bg: string;
-  platform: string | null; topic: string | null; orderBy: 'updated_at' | 'stars';
+  platform: string | null; topic: string | null; sort: string;
 }[] = [
-  { key: 'latest',  label: '最新',    icon: 'flash',           color: '#FF6B35', bg: '#FFF3E0', platform: null,      topic: null,       orderBy: 'updated_at' },
-  { key: 'rank',    label: '排行',    icon: 'trophy',          color: '#1677FF', bg: '#EBF3FF', platform: null,      topic: null,       orderBy: 'stars'      },
-  { key: 'android', label: 'Android', icon: 'logo-android',   color: '#3DDC84', bg: '#E8F5E9', platform: 'Android', topic: null,       orderBy: 'stars'      },
-  { key: 'ios',     label: 'iOS',     icon: 'logo-apple',     color: '#1A1A1A', bg: '#F5F5F7', platform: 'iOS',     topic: null,       orderBy: 'stars'      },
-  { key: 'windows', label: 'Windows', icon: 'logo-windows',   color: '#00A4EF', bg: '#E3F2FD', platform: 'Windows', topic: null,       orderBy: 'stars'      },
-  { key: 'dev',     label: '开发',    icon: 'hammer',         color: '#9C27B0', bg: '#F3E5F5', platform: null,      topic: 'terminal', orderBy: 'stars'      },
-  { key: 'media',   label: '媒体',    icon: 'musical-notes',  color: '#E91E63', bg: '#FCE4EC', platform: null,      topic: 'music',    orderBy: 'stars'      },
-  { key: 'game',    label: '游戏',    icon: 'game-controller', color: '#FF5722', bg: '#FBE9E7', platform: null,      topic: 'game',     orderBy: 'stars'      },
+  { key: 'latest',  label: '最新',    icon: 'flash',           color: '#FF6B35', bg: '#FFF3E0', platform: null,      topic: null,       sort: 'updated' },
+  { key: 'rank',    label: '排行',    icon: 'trophy',          color: '#1677FF', bg: '#EBF3FF', platform: null,      topic: null,       sort: 'stars'   },
+  { key: 'android', label: 'Android', icon: 'logo-android',   color: '#3DDC84', bg: '#E8F5E9', platform: 'Android', topic: null,       sort: 'stars'   },
+  { key: 'ios',     label: 'iOS',     icon: 'logo-apple',     color: '#1A1A1A', bg: '#F5F5F7', platform: 'iOS',     topic: null,       sort: 'stars'   },
+  { key: 'windows', label: 'Windows', icon: 'logo-windows',   color: '#00A4EF', bg: '#E3F2FD', platform: 'Windows', topic: null,       sort: 'stars'   },
+  { key: 'dev',     label: '开发',    icon: 'hammer',         color: '#9C27B0', bg: '#F3E5F5', platform: null,      topic: 'terminal', sort: 'stars'   },
+  { key: 'media',   label: '媒体',    icon: 'musical-notes',  color: '#E91E63', bg: '#FCE4EC', platform: null,      topic: 'music',    sort: 'stars'   },
+  { key: 'game',    label: '游戏',    icon: 'game-controller', color: '#FF5722', bg: '#FBE9E7', platform: null,      topic: 'game',     sort: 'stars'   },
 ];
-
-/** 从本地目录加载分类数据，无任何网络依赖 */
-function loadLocalPage(catKey: string, pageNum: number): { items: AppItem[]; hasMore: boolean } {
-  const cat = CATEGORIES.find((c) => c.key === catKey) || CATEGORIES[0];
-  let pool = LOCAL_CATALOG;
-  if (cat.platform) pool = filterByPlatform(cat.platform);
-  else if (cat.topic) pool = filterByTopic(cat.topic);
-  // 排序
-  pool = [...pool].sort((a, b) =>
-    cat.orderBy === 'updated_at'
-      ? (b.updated_at || '').localeCompare(a.updated_at || '')
-      : (b.stars || 0) - (a.stars || 0)
-  );
-  const from = (pageNum - 1) * PAGE_SIZE;
-  const items = pool.slice(from, from + PAGE_SIZE);
-  return { items, hasMore: from + PAGE_SIZE < pool.length };
-}
 
 export default function HomeTab() {
   const router = useRouter();
   const [apps, setApps] = useState<AppItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [error] = useState('');
+  const [error, setError] = useState('');
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [activeCategory, setActiveCategory] = useState('latest');
   const loadingRef = useRef(false);
 
-  const loadData = useCallback((pageNum = 1, isRefresh = false, catKey = activeCategory) => {
+  const loadData = useCallback(async (pageNum = 1, isRefresh = false, catKey = activeCategory) => {
     if (loadingRef.current && !isRefresh) return;
     loadingRef.current = true;
-    try {
-      if (isRefresh) setRefreshing(true);
-      else if (pageNum === 1) setLoading(true);
+    setError('');
+    if (isRefresh) setRefreshing(true);
+    else if (pageNum === 1) setLoading(true);
 
-      // 完全本地，同步操作，零网络请求
-      const { items, hasMore: more } = loadLocalPage(catKey, pageNum);
+    try {
+      const cat = CATEGORIES.find((c) => c.key === catKey) || CATEGORIES[0];
+      const { data, error: fnErr } = await supabase.functions.invoke('search-catalog', {
+        body: { platform: cat.platform ?? undefined, topic: cat.topic ?? undefined, sort: cat.sort, page: pageNum, per_page: 20 },
+      });
+      if (fnErr) {
+        const msg = await fnErr?.context?.text?.().catch(() => '');
+        throw new Error(msg || fnErr.message || '加载失败');
+      }
+      const items: AppItem[] = Array.isArray(data?.data) ? data.data : [];
       if (pageNum === 1) setApps(items);
       else setApps((prev) => [...prev, ...items]);
-      setHasMore(more);
+      setHasMore(items.length === 20);
+    } catch (e: any) {
+      setError(e?.message || '加载失败，请检查网络后重试');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -71,10 +62,9 @@ export default function HomeTab() {
     }
   }, [activeCategory]);
 
-  // 仅在「从未成功加载过且没有错误」时才自动触发，避免报错后反复闪烁重试
   useFocusEffect(useCallback(() => {
-    if (apps.length === 0 && !error) loadData(1, false);
-  }, [apps.length, error, loadData]));
+    if (apps.length === 0) loadData(1, false);
+  }, [apps.length, loadData]));
 
   const onCategoryPress = (key: string) => {
     setActiveCategory(key);
