@@ -96,7 +96,7 @@ export default function SearchTab() {
         sort: 'stars',
         order: 'desc',
         page: pageNum,
-        per_page: 20,
+        per_page: 50,
         installableOnly: true,
       });
 
@@ -104,11 +104,14 @@ export default function SearchTab() {
         setResults(result.items);
         setSearchSource(result.items.length > 0 ? 'remote' : 'local');
         setTotalCount(result.total_count);
-        setHasMore(result.items.length >= 20 && result.items.length < result.total_count);
+        // hasMore：只要 GitHub 还有更多页就继续，installableOnly 会大幅过滤结果
+        setHasMore(result.total_count > pageNum * 50);
         setError('');
+        // 搜索成功后刷新热词
+        loadHotWords();
       } else {
         setResults((prev) => [...prev, ...result.items]);
-        setHasMore(results.length + result.items.length < result.total_count);
+        setHasMore(result.total_count > pageNum * 50);
       }
       setPage(pageNum);
     } catch (e: any) {
