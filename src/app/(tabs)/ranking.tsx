@@ -132,7 +132,7 @@ export default function RankingScreen() {
 
         {/* 应用图标：统一使用 AppIcon（内置降级到 LetterAvatar）*/}
         <View style={{ marginRight: 12 }}>
-          <AppIcon owner={item.owner} url={item.avatar_url} name={displayName} size={42} />
+          <AppIcon owner={item.owner} url={item.avatar_url} name={displayName} size={42} priority={rank <= 5 ? 'high' : 'normal'} />
         </View>
 
         {/* 名称 + 统计 */}
