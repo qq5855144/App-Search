@@ -46,6 +46,7 @@ export interface AppEvent {
   app_name?: string
   owner?: string           // GitHub owner (username / org)
   repo?: string            // GitHub repository name
+  avatar_url?: string      // GitHub owner avatar URL
   keyword?: string
   platform?: string        // 'android' | 'ios' | 'windows' | ...
   created_at: number       // unix ms
