@@ -88,19 +88,21 @@ export default function SearchTab() {
 
     try {
       // 全量拉取 app_catalog（仅有安装包的项目），然后 JS 端做关键词过滤。
-      // 这样彻底绕开 PostgREST filter 的 URL 编码问题和 RPC schema cache 不可靠问题。
+      // 注意：apps_cache 表没有 archived 列，所以 app_catalog 也没有，移除该过滤条件避免报错
       const { data, error: dbError } = await supabase
         .from('app_catalog')
         .select('*')
-        .eq('archived', false)
         .not('latest_version', 'is', null)   // 只要有安装包的项目
         .order('stars', { ascending: false })
         .limit(500);                          // 当前目录 <40 条，500 足够兜底
 
       if (dbError) {
+        console.error('[Search] DB Error:', dbError);
         setError(dbError.message || `查询失败 (${dbError.code || 'unknown'})`);
         return;
       }
+
+      console.log('[Search] Raw data count:', (data || []).length);
 
       // JS 端关键词匹配：name / repo / full_name / description / owner
       const lower = k.toLowerCase();
@@ -111,6 +113,7 @@ export default function SearchTab() {
         r.description?.toLowerCase().includes(lower) ||
         r.owner?.toLowerCase().includes(lower)
       );
+      console.log('[Search] Matched count:', matched.length);
 
       const items: AppItem[] = matched.map((r: any): AppItem => ({
         id: r.id, full_name: r.full_name, name: r.name,
