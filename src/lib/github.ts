@@ -79,19 +79,17 @@ export async function searchRepos(
   const order = options.order || 'desc'
   const page = options.page || 1
   const perPage = options.per_page || 30
-  const cacheKey = searchCacheKey(q, sort, order, page, perPage)
+  const installableOnly = options.installableOnly ?? true   // 全局默认：只展示有安装包的应用
+  const cacheKey = searchCacheKey(q, sort, order, page, perPage) + (installableOnly ? ':installable' : '')
   const ttl = 6 * HOUR
 
-  // Return cached result immediately if available (even if empty, we still want to show it)
+  // 命中缓存直接返回，后台刷新
   const cached = await getCache<{ items: AppItem[]; total_count: number }>(cacheKey)
   if (cached) {
-    // Refresh in background without blocking
     ;(async () => {
       try {
-        const fresh = await _fetchSearchRepos(q, sort, order, page, perPage)
-        if (fresh.items.length > 0) {
-          await setCache(cacheKey, fresh, ttl)
-        }
+        const fresh = await _fetchAndFilter(q, sort, order, page, perPage, installableOnly)
+        if (fresh.items.length > 0) await setCache(cacheKey, fresh, ttl)
       } catch (e) {
         console.warn('[GitHub] Background refresh failed:', e)
       }
@@ -99,12 +97,28 @@ export async function searchRepos(
     return cached
   }
 
-  const result = await _fetchSearchRepos(q, sort, order, page, perPage)
-  // Only cache non-empty results
-  if (result.items.length > 0) {
-    await setCache(cacheKey, result, ttl)
-  }
+  const result = await _fetchAndFilter(q, sort, order, page, perPage, installableOnly)
+  if (result.items.length > 0) await setCache(cacheKey, result, ttl)
   return result
+}
+
+/**
+ * 搜索 + 可选 installableOnly 过滤，统一入口
+ */
+async function _fetchAndFilter(
+  q: string, sort: string, order: string, page: number, perPage: number,
+  installableOnly: boolean,
+): Promise<{ items: AppItem[]; total_count: number }> {
+  const raw = await _fetchSearchRepos(q, sort, order, page, perPage)
+  if (!installableOnly) return raw
+
+  // enrich 并过滤，兜底：若全部无安装包则返回原始列表（避免空列表）
+  const enriched = await enrichApps(raw.items)
+  const installable = enriched.filter((a) => a.has_installable_assets)
+  return {
+    items: installable.length > 0 ? installable : raw.items,
+    total_count: raw.total_count,
+  }
 }
 
 async function _fetchSearchRepos(
