@@ -10,22 +10,23 @@ import SkeletonCard from '@/components/openappstore/SkeletonCard';
 
 const CATEGORIES: {
   key: string; label: string; icon: string; color: string; bg: string;
-  platform: string | null; topic: string | null; sort: string;
+  platform: string | null; topics: string[]; sort: string;
 }[] = [
-  { key: 'latest',  label: '最新',    icon: 'flash',           color: '#FF6B35', bg: '#FFF3E0', platform: null,      topic: null,       sort: 'updated' },
-  { key: 'rank',    label: '排行',    icon: 'trophy',          color: '#1677FF', bg: '#EBF3FF', platform: null,      topic: null,       sort: 'stars'   },
-  { key: 'android', label: 'Android', icon: 'logo-android',   color: '#3DDC84', bg: '#E8F5E9', platform: 'Android', topic: null,       sort: 'stars'   },
-  { key: 'ios',     label: 'iOS',     icon: 'logo-apple',     color: '#1A1A1A', bg: '#F5F5F7', platform: 'iOS',     topic: null,       sort: 'stars'   },
-  { key: 'windows', label: 'Windows', icon: 'logo-windows',   color: '#00A4EF', bg: '#E3F2FD', platform: 'Windows', topic: null,       sort: 'stars'   },
-  { key: 'dev',     label: '开发',    icon: 'hammer',         color: '#9C27B0', bg: '#F3E5F5', platform: null,      topic: 'terminal', sort: 'stars'   },
-  { key: 'media',   label: '媒体',    icon: 'musical-notes',  color: '#E91E63', bg: '#FCE4EC', platform: null,      topic: 'music',    sort: 'stars'   },
-  { key: 'game',    label: '游戏',    icon: 'game-controller', color: '#FF5722', bg: '#FBE9E7', platform: null,      topic: 'game',     sort: 'stars'   },
+  { key: 'latest',  label: '最新',    icon: 'flash',           color: '#FF6B35', bg: '#FFF3E0', platform: null,      topics: [],                                               sort: 'updated' },
+  { key: 'rank',    label: '排行',    icon: 'trophy',          color: '#1677FF', bg: '#EBF3FF', platform: null,      topics: [],                                               sort: 'stars'   },
+  { key: 'android', label: 'Android', icon: 'logo-android',   color: '#3DDC84', bg: '#E8F5E9', platform: 'Android', topics: [],                                               sort: 'stars'   },
+  { key: 'ios',     label: 'iOS',     icon: 'logo-apple',     color: '#1A1A1A', bg: '#F5F5F7', platform: 'iOS',     topics: [],                                               sort: 'stars'   },
+  { key: 'windows', label: 'Windows', icon: 'logo-windows',   color: '#00A4EF', bg: '#E3F2FD', platform: 'Windows', topics: [],                                               sort: 'stars'   },
+  { key: 'dev',     label: '开发',    icon: 'hammer',         color: '#9C27B0', bg: '#F3E5F5', platform: null,      topics: ['terminal', 'editor', 'productivity', 'ssh', 'file-manager'], sort: 'stars' },
+  { key: 'media',   label: '媒体',    icon: 'musical-notes',  color: '#E91E63', bg: '#FCE4EC', platform: null,      topics: ['music', 'streaming', 'youtube', 'podcast', 'photos'],        sort: 'stars' },
+  { key: 'privacy', label: '隐私',    icon: 'shield-checkmark', color: '#FF5722', bg: '#FBE9E7', platform: null,    topics: ['privacy', 'password-manager', 'network'],                    sort: 'stars' },
 ];
 
 export default function HomeTab() {
   const router = useRouter();
   const [apps, setApps] = useState<AppItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
@@ -37,14 +38,19 @@ export default function HomeTab() {
     if (loadingRef.current && !isRefresh) return;
     loadingRef.current = true;
     setError('');
-    if (isRefresh) setRefreshing(true);
-    else if (pageNum === 1) setLoading(true);
+    if (isRefresh) { setRefreshing(true); }
+    else if (pageNum === 1) { setLoading(true); }
+    else { setLoadingMore(true); }
 
     try {
       const cat = CATEGORIES.find((c) => c.key === catKey) || CATEGORIES[0];
-      const { data, error: fnErr } = await supabase.functions.invoke('search-catalog', {
-        body: { platform: cat.platform ?? undefined, topic: cat.topic ?? undefined, sort: cat.sort, page: pageNum, per_page: 20 },
-      });
+      const body: Record<string, unknown> = {
+        sort: cat.sort, page: pageNum, per_page: 20,
+      };
+      if (cat.platform) body.platform = cat.platform;
+      if (cat.topics.length > 0) body.topics = cat.topics;
+
+      const { data, error: fnErr } = await supabase.functions.invoke('search-catalog', { body });
       if (fnErr) {
         const msg = await fnErr?.context?.text?.().catch(() => '');
         throw new Error(msg || fnErr.message || '加载失败');
@@ -57,6 +63,7 @@ export default function HomeTab() {
       setError(e?.message || '加载失败，请检查网络后重试');
     } finally {
       setLoading(false);
+      setLoadingMore(false);
       setRefreshing(false);
       loadingRef.current = false;
     }
@@ -155,8 +162,13 @@ export default function HomeTab() {
               : <View style={{ alignItems: 'center', paddingTop: 60 }}><Text style={{ color: '#AAA' }}>暂无数据</Text></View>
         }
         ListFooterComponent={
-          !loading || apps.length === 0 ? null
-            : <View style={{ paddingVertical: 16 }}><ActivityIndicator color="#1677FF" /></View>
+          loadingMore
+            ? <View style={{ paddingVertical: 16 }}><ActivityIndicator color="#1677FF" /></View>
+            : hasMore
+              ? <View style={{ paddingVertical: 12, alignItems: 'center' }}><Text style={{ color: '#CCC', fontSize: 12 }}>上滑加载更多</Text></View>
+              : apps.length > 0
+                ? <View style={{ paddingVertical: 16, alignItems: 'center' }}><Text style={{ color: '#CCC', fontSize: 12 }}>— 已显示全部 —</Text></View>
+                : null
         }
       />
     </SafeAreaView>
