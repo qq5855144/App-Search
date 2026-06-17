@@ -1,11 +1,14 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect } from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text, Pressable, Platform } from 'react-native';
+import * as SplashScreen from 'expo-splash-screen';
 import { initToken } from '@/lib/token';
 import "../global.css";
+
+// 阻止启动屏自动隐藏，等待资源就绪后手动隐藏
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 /** 全局错误边界：捕获任何渲染错误，显示可见提示而非白屏 */
 class ErrorBoundary extends React.Component<
@@ -44,16 +47,28 @@ class ErrorBoundary extends React.Component<
 
 export default function RootLayout() {
   useEffect(() => {
-    // 静态导入，避免产生 lazy chunk 导致 web 白屏
-    initToken().catch(() => {});
+    // 初始化 Token，完成后隐藏启动屏
+    initToken()
+      .catch(() => {})
+      .finally(() => {
+        SplashScreen.hideAsync().catch(() => {});
+      });
   }, []);
 
   return (
     <ErrorBoundary>
       <SafeAreaProvider style={{ flex: 1 }}>
-        <StatusBar style="dark" />
-        <Stack screenOptions={{ headerShown: false, animation: 'none' }}>
-          <Stack.Screen name="(tabs)" />
+        <StatusBar style="dark" backgroundColor="transparent" translucent={Platform.OS === 'android'} />
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            // 原生滑入动画，比 'none' 更有 app 感
+            animation: Platform.OS === 'android' ? 'fade_from_bottom' : 'default',
+            // Android 13+ 预测性返回手势
+            gestureEnabled: true,
+          }}
+        >
+          <Stack.Screen name="(tabs)" options={{ animation: 'none' }} />
           <Stack.Screen name="detail" />
           <Stack.Screen name="downloads" />
           <Stack.Screen name="favorites" />
