@@ -3,7 +3,7 @@ import { View, Text, Pressable, FlatList, ActivityIndicator, ScrollView } from '
 import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { searchRepos, enrichApps } from '@/lib/github';
+import { searchRepos } from '@/lib/github';
 import { clearAllCache } from '@/lib/cache';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
@@ -78,13 +78,8 @@ export default function DiscoverTab() {
       else if (pageNum === 1) setLoading(true);
       const q = buildQuery(p, cat);
       const { items } = await searchRepos(q, { page: pageNum, per_page: 20, sort: s });
-      // 等待 enrich 完成（含超时兜底），只展示有安装包的应用
-      const enriched = await enrichApps(items);
-      const installable = enriched.filter((a) => a.has_installable_assets);
-      // 若本批次 enrich 超时/全部失败，兜底展示原始结果而非空列表
-      const toShow = installable.length > 0 ? installable : items;
-      if (pageNum === 1) setApps(toShow);
-      else setApps((prev) => [...prev, ...toShow]);
+      if (pageNum === 1) setApps(items);
+      else setApps((prev) => [...prev, ...items]);
       setHasMore(items.length >= 20);
     } catch (e: any) {
       console.warn('[Discover] Load failed:', e);
