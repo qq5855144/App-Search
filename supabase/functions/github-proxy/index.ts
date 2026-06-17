@@ -1,4 +1,5 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const GITHUB_API_BASE = 'https://api.github.com'
 
@@ -14,11 +15,34 @@ function githubHeaders(token?: string) {
     'X-GitHub-Api-Version': '2022-11-28',
     'User-Agent': 'OpenAppStore/1.0',
   }
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
+  if (token) headers['Authorization'] = `Bearer ${token}`
   return headers
 }
+
+const INSTALL_EXTS = ['.apk', '.ipa', '.dmg', '.pkg', '.exe', '.msi',
+  '.deb', '.rpm', '.appimage', '.flatpak', '.snap']
+const VERIFY_EXTS = ['.asc', '.sig', '.sha256', '.sha512', '.md5']
+
+function detectPlatform(filename: string): string | null {
+  const l = filename.toLowerCase()
+  if (l.endsWith('.apk')) return 'Android'
+  if (l.endsWith('.ipa')) return 'iOS'
+  if (l.endsWith('.dmg') || l.endsWith('.pkg')) return 'macOS'
+  if (l.endsWith('.exe') || l.endsWith('.msi')) return 'Windows'
+  if (['.deb', '.rpm', '.appimage', '.flatpak', '.snap'].some((e) => l.endsWith(e))) return 'Linux'
+  return null
+}
+
+/** 创建 Supabase service_role 客户端（仅 Edge Function 内部使用） */
+function makeSupabase() {
+  const url = Deno.env.get('SUPABASE_URL')!
+  const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  return createClient(url, key, { auth: { persistSession: false } })
+}
+
+/** 缓存有效期：has_release=true 缓存7天，false 缓存1天（可能新增发行版） */
+const CACHE_TTL_HAS  = 7 * 24 * 60 * 60 * 1000  // 7天
+const CACHE_TTL_NONE = 1 * 24 * 60 * 60 * 1000  // 1天
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -73,82 +97,139 @@ serve(async (req) => {
         url = `${GITHUB_API_BASE}/rate_limit`
         break
       }
+
+      // 批量校验仓库是否含安装包
+      // 优先读 repo_installable_cache（共享 DB 缓存）
+      // 缓存未命中才调用 GitHub API，并将结果写回 DB
       case 'check_installable_batch': {
-        // 批量检查多个仓库的最新 Release 是否含可安装包，一次 Edge Function 调用并发检测
-        const repos = (params?.repos || []) as Array<{ owner: string; repo: string }>
-        const INSTALL_EXTS = ['.apk', '.ipa', '.dmg', '.pkg', '.exe', '.msi', '.deb', '.rpm', '.appimage', '.flatpak', '.snap']
-        const VERIFY_EXTS = ['.asc', '.sig', '.sha256', '.sha512', '.md5']
-        const platformFromName = (name: string) => {
-          const lower = name.toLowerCase()
-          if (lower.endsWith('.apk')) return 'Android'
-          if (lower.endsWith('.ipa')) return 'iOS'
-          if (lower.endsWith('.dmg') || lower.endsWith('.pkg')) return 'macOS'
-          if (lower.endsWith('.exe') || lower.endsWith('.msi')) return 'Windows'
-          if (lower.endsWith('.deb') || lower.endsWith('.rpm') || lower.endsWith('.appimage') || lower.endsWith('.flatpak') || lower.endsWith('.snap')) return 'Linux'
-          return null
+        const repos: Array<{ owner: string; repo: string }> = params?.repos || []
+        const supabase = makeSupabase()
+
+        // ── 1. 批量读 DB 缓存 ──────────────────────────────────────
+        const keys = repos.slice(0, 25).map((r) => `${r.owner}/${r.repo}`)
+        const { data: cachedRows } = await supabase
+          .from('repo_installable_cache')
+          .select('owner, repo, has_release, latest_version, latest_release_date, total_downloads, platforms, checked_at')
+          .in('owner', repos.map((r) => r.owner))
+
+        const now = Date.now()
+        const cacheMap = new Map<string, any>()
+        for (const row of (cachedRows || [])) {
+          const age = now - new Date(row.checked_at).getTime()
+          const ttl = row.has_release ? CACHE_TTL_HAS : CACHE_TTL_NONE
+          if (age < ttl) {
+            cacheMap.set(`${row.owner}/${row.repo}`, row)
+          }
         }
-        const checks = await Promise.all(
-          repos.map(async ({ owner, repo }) => {
-            try {
-              const r = await fetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}/releases?per_page=5`, {
-                headers: githubHeaders(token),
-              })
-              if (!r.ok) return { key: `${owner}/${repo}`, result: { ok: false } }
-              const releases = await r.json()
-              for (const rel of releases || []) {
-                const assets = rel.assets || []
-                const installAssets = assets.filter((a: any) =>
-                  INSTALL_EXTS.some((ext) => a.name.toLowerCase().endsWith(ext))
+
+        // ── 2. 区分缓存命中 / 未命中 ─────────────────────────────
+        const toFetch = repos.slice(0, 25).filter((r) => !cacheMap.has(`${r.owner}/${r.repo}`))
+        const cachedResults = repos.slice(0, 25)
+          .filter((r) => cacheMap.has(`${r.owner}/${r.repo}`))
+          .map(({ owner, repo }) => {
+            const row = cacheMap.get(`${owner}/${repo}`)
+            return row.has_release
+              ? { key: `${owner}/${repo}`, ok: true, from_cache: true,
+                  latest_version: row.latest_version,
+                  latest_release_date: row.latest_release_date,
+                  total_downloads: row.total_downloads,
+                  platforms: row.platforms }
+              : { key: `${owner}/${repo}`, ok: false, from_cache: true }
+          })
+
+        // ── 3. GitHub API 查询未缓存的仓库 ───────────────────────
+        const freshResults: any[] = []
+        const dbUpserts: any[] = []
+
+        if (toFetch.length > 0) {
+          const settled = await Promise.allSettled(
+            toFetch.map(async ({ owner, repo }) => {
+              const key = `${owner}/${repo}`
+              try {
+                const r = await fetch(
+                  `${GITHUB_API_BASE}/repos/${owner}/${repo}/releases?per_page=5`,
+                  { headers: githubHeaders(token) }
                 )
-                if (installAssets.length === 0) continue
-                const verifyAssets = assets.filter((a: any) =>
-                  VERIFY_EXTS.some((ext) => a.name.toLowerCase().endsWith(ext))
-                )
-                const platforms = Array.from(new Set(installAssets.map((a: any) => platformFromName(a.name)).filter(Boolean)))
-                const totalDownloads = installAssets.reduce((sum: number, a: any) => sum + (a.download_count || 0), 0)
-                return {
-                  key: `${owner}/${repo}`,
-                  result: {
-                    ok: true,
-                    latest_version: rel.tag_name || rel.name || null,
-                    latest_release_date: rel.published_at || null,
-                    total_downloads: totalDownloads,
+                if (!r.ok) return { key, ok: false }
+                const releases = await r.json() as any[]
+
+                for (const rel of releases) {
+                  const assets: any[] = rel.assets || []
+                  const installAssets = assets.filter((a: any) =>
+                    INSTALL_EXTS.some((ext) => a.name.toLowerCase().endsWith(ext))
+                  )
+                  if (installAssets.length === 0) continue
+
+                  const verifyAssets = assets.filter((a: any) =>
+                    VERIFY_EXTS.some((ext) => a.name.toLowerCase().endsWith(ext))
+                  )
+                  const platforms = [...new Set(
+                    installAssets.map((a: any) => detectPlatform(a.name)).filter(Boolean)
+                  )] as string[]
+                  const total_downloads = installAssets.reduce(
+                    (sum: number, a: any) => sum + (a.download_count || 0), 0
+                  )
+
+                  return {
+                    key, ok: true,
+                    latest_version: rel.tag_name,
+                    latest_release_date: rel.published_at,
+                    total_downloads,
                     platforms,
                     install_assets: installAssets.map((a: any) => ({
-                      name: a.name,
-                      size: a.size,
-                      download_count: a.download_count || 0,
+                      name: a.name, size: a.size,
+                      download_count: a.download_count,
                       browser_download_url: a.browser_download_url,
                     })),
                     verification_assets: verifyAssets.map((a: any) => ({
                       name: a.name,
-                      size: a.size,
-                      download_count: a.download_count || 0,
                       browser_download_url: a.browser_download_url,
                     })),
-                  },
+                  }
                 }
+                return { key, ok: false }
+              } catch {
+                return { key, ok: false }
               }
-              return { key: `${owner}/${repo}`, result: { ok: false } }
-            } catch {
-              return { key: `${owner}/${repo}`, result: { ok: false } }
-            }
-          })
-        )
-        const map: Record<string, unknown> = {}
-        checks.forEach(({ key, result }) => { map[key] = result })
-        return new Response(JSON.stringify({ data: map }), {
+            })
+          )
+
+          for (const s of settled) {
+            if (s.status !== 'fulfilled' || !s.value) continue
+            const v = s.value as any
+            freshResults.push(v)
+            // 准备 DB upsert（不管 ok 还是 false 都缓存，避免重复查询）
+            const [o, rp] = v.key.split('/')
+            dbUpserts.push({
+              owner: o, repo: rp,
+              has_release: v.ok === true,
+              latest_version: v.latest_version ?? null,
+              latest_release_date: v.latest_release_date ?? null,
+              total_downloads: v.total_downloads ?? 0,
+              platforms: v.platforms ?? [],
+              checked_at: new Date().toISOString(),
+            })
+          }
+
+          // ── 4. 异步写回 DB 缓存（不阻塞响应）────────────────────
+          if (dbUpserts.length > 0) {
+            supabase.from('repo_installable_cache')
+              .upsert(dbUpserts, { onConflict: 'owner,repo' })
+              .then(({ error }) => { if (error) console.error('[cache upsert]', error.message) })
+          }
+        }
+
+        const data = [...cachedResults, ...freshResults]
+        return new Response(JSON.stringify({ data }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         })
       }
+
       default:
         throw new Error(`Unknown action: ${action}`)
     }
 
-    const response = await fetch(url, {
-      method,
-      headers: githubHeaders(token),
-    })
+    const response = await fetch(url, { method, headers: githubHeaders(token) })
 
     if (!response.ok) {
       const errorText = await response.text()
@@ -159,7 +240,6 @@ serve(async (req) => {
     }
 
     const data = await response.json()
-
     return new Response(JSON.stringify({ data, headers: Object.fromEntries(response.headers.entries()) }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
