@@ -79,13 +79,25 @@ export default function SearchTab() {
     inputRef.current?.blur();
     try { addSearchHistory(k).then(loadHistory); } catch { /* ignore */ }
     addAppEvent({ event_type: 'search', keyword: k }).catch(() => {});
+
+    // 先同步更新 UI 状态，确保 loading spinner 先显示
+    setSearched(true);
+    setLoading(true);
+    setError('');
+    setResults([]);
+
     try {
-      setLoading(true); setSearched(true); setError('');
-      // 调用服务端 RPC，绕开 JS 客户端 URL 编码对 % 的歧义处理
+      // 调用服务端 RPC，完全绕开 JS 客户端 URL 编码对 % 的歧义
       // search_apps() 内部用 latest_version IS NOT NULL 过滤无安装包项目
       const { data, error: rpcError } = await supabase
         .rpc('search_apps', { q: k, lim: 30 });
-      if (rpcError) throw new Error(rpcError.message || '搜索失败');
+
+      if (rpcError) {
+        // 显示具体错误，绝不静默失败
+        setError(rpcError.message || rpcError.hint || `搜索失败 (${rpcError.code || 'unknown'})`);
+        return;
+      }
+
       const items: AppItem[] = (data || []).map((r: any): AppItem => ({
         id: r.id, full_name: r.full_name, name: r.name,
         description: r.description, owner: r.owner, repo: r.repo,
@@ -100,7 +112,9 @@ export default function SearchTab() {
       }));
       setResults(items);
     } catch (e: any) {
-      setError(e?.message || '搜索失败');
+      // 捕获所有异常并显示，确保不会静默显示"无结果"
+      const msg = e?.message || e?.toString() || '搜索失败，请重试';
+      setError(msg);
     } finally {
       setLoading(false);
     }
