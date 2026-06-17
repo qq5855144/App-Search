@@ -56,44 +56,6 @@ jobs:
         env:
           CI: true
 
-      - name: Fix Gradle network timeout and add China mirrors
-        run: |
-          # Fix network timeout (10s -> 120s)
-          sed -i 's/networkTimeout=10000/networkTimeout=120000/' android/gradle/wrapper/gradle-wrapper.properties
-
-          # Add Aliyun mirrors to build.gradle
-          python3 << 'PYEOF'
-          import re
-
-          path = 'android/build.gradle'
-          with open(path, 'r') as f:
-              content = f.read()
-
-          # Add aliyun mirrors to buildscript repositories
-          if 'maven.aliyun.com' not in content:
-              # 用双引号，避免 \' 被注入 Groovy 后产生语法错误
-              aliyun_google = '    maven { url "https://maven.aliyun.com/repository/google" }'
-              aliyun_public = '    maven { url "https://maven.aliyun.com/repository/public" }'
-              aliyun_plugin = '    maven { url "https://maven.aliyun.com/repository/gradle-plugin" }'
-
-              # buildscript repos
-              content = re.sub(
-                  r'(buildscript\s*\{\s*repositories\s*\{)',
-                  r'\1' + '\n' + aliyun_google + '\n' + aliyun_public + '\n' + aliyun_plugin,
-                  content
-              )
-              # allprojects repos
-              content = re.sub(
-                  r'(allprojects\s*\{\s*repositories\s*\{)',
-                  r'\1' + '\n' + aliyun_google + '\n' + aliyun_public,
-                  content
-              )
-
-          with open(path, 'w') as f:
-              f.write(content)
-          print("Added Aliyun mirrors to android/build.gradle")
-          PYEOF
-
       - name: Force arm64-v8a only (strip all other ABIs)
         run: |
           python3 << 'PYEOF'
@@ -253,5 +215,6 @@ jobs:
           generate_release_notes: true
           make_latest: true
           files: android/app/build/outputs/apk/release/*.apk
+
 
 
