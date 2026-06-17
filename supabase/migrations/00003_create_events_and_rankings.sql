@@ -74,33 +74,38 @@ GRANT SELECT ON search_hot_words TO anon;
 
 
 -- ============================================================
--- 3. increment_hot_word() — RPC：原子 increment 搜索热词
---    使用 ON CONFLICT 避免重复 key 报错
+-- 3. increment_hot_word(keyword_in TEXT, increment_by INTEGER DEFAULT 1)
+--    原子 increment 单个搜索热词（与前端 JS 调用签名对齐）
 -- ============================================================
-CREATE OR REPLACE FUNCTION increment_hot_word(kw TEXT)
+CREATE OR REPLACE FUNCTION increment_hot_word(keyword_in TEXT, increment_by INTEGER DEFAULT 1)
 RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
+DECLARE
+    clean_kw TEXT;
 BEGIN
-    IF kw IS NULL OR trim(kw) = '' THEN RETURN; END IF;
+    IF keyword_in IS NULL THEN RETURN; END IF;
+    clean_kw := btrim(lower(keyword_in));
+    IF clean_kw = '' OR length(clean_kw) < 2 THEN RETURN; END IF;
+    IF increment_by IS NULL OR increment_by < 1 THEN increment_by := 1; END IF;
 
     INSERT INTO search_hot_words (keyword, search_count, last_searched, updated_at)
-    VALUES (trim(kw), 1, NOW(), NOW())
+    VALUES (clean_kw, increment_by, NOW(), NOW())
     ON CONFLICT (keyword) DO UPDATE
-    SET search_count  = search_hot_words.search_count + 1,
+    SET search_count  = search_hot_words.search_count + increment_by,
         last_searched = NOW(),
         updated_at    = NOW();
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION increment_hot_word(TEXT) TO anon;
-GRANT EXECUTE ON FUNCTION increment_hot_word(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION increment_hot_word(TEXT, INTEGER) TO anon;
+GRANT EXECUTE ON FUNCTION increment_hot_word(TEXT, INTEGER) TO authenticated;
 
 
 -- ============================================================
--- 4. increment_hot_words_batch(TEXT[]) — RPC：批量 increment 热词
---    替代 N 次单独 RPC 调用，减少网络往返
+-- 4. increment_hot_words_batch(TEXT[]) — 批量 increment 热词
+--    在数据库端做单次事务内 upsert，避免 N 次网络往返
 -- ============================================================
 CREATE OR REPLACE FUNCTION increment_hot_words_batch(keywords TEXT[])
 RETURNS VOID
@@ -114,9 +119,10 @@ BEGIN
 
     FOREACH kw IN ARRAY keywords
     LOOP
-        IF kw IS NOT NULL AND trim(kw) <> '' THEN
+        IF kw IS NOT NULL AND btrim(lower(kw)) <> ''
+           AND length(btrim(lower(kw))) >= 2 THEN
             INSERT INTO search_hot_words (keyword, search_count, last_searched, updated_at)
-            VALUES (trim(kw), 1, NOW(), NOW())
+            VALUES (btrim(lower(kw)), 1, NOW(), NOW())
             ON CONFLICT (keyword) DO UPDATE
             SET search_count  = search_hot_words.search_count + 1,
                 last_searched = NOW(),
@@ -131,15 +137,71 @@ GRANT EXECUTE ON FUNCTION increment_hot_words_batch(TEXT[]) TO authenticated;
 
 
 -- ============================================================
--- 5. safe_hot_words — 过滤后的热词视图
---    过滤掉包含不安全关键词（如色情/赌博/毒品 等）的搜索词
---    实际过滤规则由应用层维护，这里简单暴露 search_count > 0 的词
+-- 5. get_hot_keywords(limit_n INTEGER DEFAULT 20) — 前端搜索页主入口
+--    返回 [{keyword, cnt}] 列表，与 search.tsx 期望的格式一致
+--    在数据库端做：小写规范化、最小出现次数、TTL 过滤、LIMIT
+-- ============================================================
+CREATE OR REPLACE FUNCTION get_hot_keywords(limit_n INTEGER DEFAULT 20)
+RETURNS TABLE(keyword TEXT, cnt INTEGER)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    IF limit_n IS NULL OR limit_n < 1 THEN limit_n := 20; END IF;
+    IF limit_n > 100 THEN limit_n := 100; END IF;
+
+    RETURN QUERY
+    SELECT
+        h.keyword,
+        h.search_count AS cnt
+    FROM search_hot_words h
+    WHERE h.search_count >= 1
+      AND h.last_searched >= NOW() - INTERVAL '90 days'   -- TTL: 90 天未出现则剔除
+      -- 基本安全规则：最短 2 字，最长 50 字，不含控制字符
+      AND length(h.keyword) BETWEEN 2 AND 50
+      AND h.keyword !~ '[\\x00-\\x1F\\x7F]'
+    ORDER BY h.search_count DESC, h.last_searched DESC
+    LIMIT limit_n;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION get_hot_keywords(INTEGER) TO anon;
+GRANT EXECUTE ON FUNCTION get_hot_keywords(INTEGER) TO authenticated;
+
+
+-- ============================================================
+-- 6. clean_old_hot_words() — 定期清理过期热词
+--    可用 pg_cron 定期执行：SELECT clean_old_hot_words();
+-- ============================================================
+CREATE OR REPLACE FUNCTION clean_old_hot_words()
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    deleted_cnt INTEGER;
+BEGIN
+    DELETE FROM search_hot_words
+    WHERE last_searched < NOW() - INTERVAL '90 days'
+       OR search_count < 1;
+    GET DIAGNOSTICS deleted_cnt = ROW_COUNT;
+    RETURN deleted_cnt;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION clean_old_hot_words() TO authenticated;
+
+
+-- ============================================================
+-- 7. safe_hot_words 视图（兼容旧查询，保留只读权限）
 -- ============================================================
 CREATE OR REPLACE VIEW safe_hot_words AS
 SELECT keyword, search_count, last_searched
 FROM search_hot_words
 WHERE search_count > 0
-ORDER BY search_count DESC
+  AND last_searched >= NOW() - INTERVAL '90 days'
+  AND length(keyword) BETWEEN 2 AND 50
+ORDER BY search_count DESC, last_searched DESC
 LIMIT 100;
 
 GRANT SELECT ON safe_hot_words TO anon;

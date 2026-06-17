@@ -2,6 +2,47 @@ import { supabase } from './supabase';
 import type { AppItem } from '@/types';
 
 /**
+ * 热搜词：前端搜索页统一入口
+ *
+ * 逻辑：
+ *  1. 优先通过 get_hot_keywords RPC 读取（返回 [{keyword, cnt}]）
+ *  2. RPC 失败或返回空 → 返回空数组，调用方可用本地历史兜底
+ *  3. 做了简单客户端缓存（5 分钟），避免频繁 RPC 调用
+ */
+let _hotCache: { words: string[]; at: number } | null = null;
+const HOT_CACHE_TTL = 5 * 60 * 1000;
+
+export async function getHotWords(limit = 20): Promise<string[]> {
+  const now = Date.now();
+  if (_hotCache && now - _hotCache.at < HOT_CACHE_TTL) {
+    return _hotCache.words.slice(0, limit);
+  }
+
+  try {
+    const { data, error } = await supabase
+      .rpc('get_hot_keywords', { limit_n: Math.min(limit, 100) })
+
+    if (error || !Array.isArray(data) || data.length === 0) {
+      _hotCache = { words: [], at: now };
+      return [];
+    }
+
+    const words = (data as { keyword: string; cnt?: number }[])
+      .map((r) => r.keyword)
+      .filter((k) => k && k.length >= 2 && k.length <= 50)
+      .slice(0, limit);
+
+    _hotCache = { words, at: now };
+    return words;
+  } catch {
+    _hotCache = { words: [], at: now };
+    return [];
+  }
+}
+
+export function clearHotWordsCache() { _hotCache = null; }
+
+/**
  * 将数据库行转换为 AppItem
  * 统一转换逻辑，消除各页面的重复代码
  */

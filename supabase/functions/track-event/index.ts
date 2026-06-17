@@ -97,49 +97,31 @@ Deno.serve(async (req: Request) => {
       console.warn('[track-event] insert error:', e?.message)
     }
 
-    // --- 3. 批量更新热词 ---
-    let hotWordsUpdated = 0
+    // --- 3. 批量更新热词（一个事务内 upsert，避免 N 次循环）---
     if (keywordStats.size > 0) {
       try {
-        // 对每个 keyword，调用 increment_hot_words_batch（SQL 函数）
-        // 或者用简单的 upsert
+        const keywordArr = Array.from(keywordStats.keys())
+        // 优先：用单个批量 RPC，一次调用解决
+        const { error: batchErr } = await supabase
+          .rpc('increment_hot_words_batch', { keywords: keywordArr })
+          .catch(() => ({ error: { message: 'batch rpc failed, fall back' } }))
+
+        if (!batchErr) return new Response(
+          JSON.stringify({ ok: true, inserted, hot_words_updated: keywordArr.length }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        )
+
+        // 备用：对每个 keyword 调用新签名 increment_hot_word
         for (const [kw, count] of keywordStats.entries()) {
-          const { error } = await supabase.rpc('increment_hot_word', {
+          await supabase.rpc('increment_hot_word', {
             keyword_in: kw, increment_by: count,
-          }).catch(() => ({ error: { message: 'rpc not found, fall back to upsert' } }))
-
-          // 如果 SQL 函数不存在，回退到简单 upsert
-          if (error) {
-            // 先查有没有这个关键词
-            const { data: existing } = await supabase
-              .from('search_hot_words')
-              .select('search_count')
-              .eq('keyword', kw)
-              .limit(1)
-
-            if (existing && existing.length > 0) {
-              await supabase
-                .from('search_hot_words')
-                .update({
-                  search_count: (existing[0] as any).search_count + count,
-                  last_searched_at: new Date().toISOString(),
-                })
-                .eq('keyword', kw)
-            } else {
-              await supabase.from('search_hot_words').insert({
-                keyword: kw, search_count: count, last_searched_at: new Date().toISOString(),
-              })
-            }
-          }
-          hotWordsUpdated += count
+          }).catch(() => { /* silent: RPC 不可用时也不阻断事件写入 */ })
         }
-      } catch (e: any) {
-        console.warn('[track-event] hot words error:', e?.message)
-      }
+      } catch { /* hot words 失败不影响事件写入的成功返回 */ }
     }
 
     return new Response(
-      JSON.stringify({ ok: true, inserted, hot_words_updated: hotWordsUpdated }),
+      JSON.stringify({ ok: true, inserted, hot_words_updated: keywordStats.size }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     )
   } catch (err: any) {
