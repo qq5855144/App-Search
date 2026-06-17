@@ -82,11 +82,10 @@ export default function DiscoverTab() {
       if (pageNum === 1) setApps(items);
       else setApps((prev) => [...prev, ...items]);
       setHasMore(items.length >= 20);
-      // 后台静默补充版本/下载量信息，完成后只保留有安装包的应用
+      // 后台静默补充版本/下载量信息（不过滤，发现页展示所有应用，安装包信息仅作徽章展示用）
       enrichAppsInBackground(items, (enriched) => {
-        const installable = enriched.filter((a) => a.has_installable_assets);
-        if (pageNum === 1) setApps(installable);
-        else setApps((prev) => [...prev.slice(0, prev.length - items.length), ...installable]);
+        if (pageNum === 1) setApps(enriched);
+        else setApps((prev) => [...prev.slice(0, prev.length - items.length), ...enriched]);
       });
     } catch (e: any) {
       console.warn('[Discover] Load failed:', e);
