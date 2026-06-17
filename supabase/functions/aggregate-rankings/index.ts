@@ -1,8 +1,11 @@
 /**
- * aggregate-rankings Edge Function
- * 聚合 app_events 生成排行榜，写入 app_rankings 表。
- * 调用方式：POST（无需 body）或通过 Supabase Cron 定时触发。
- * 也可以前端手动触发刷新。
+ * aggregate-rankings Edge Function (v2)
+ * 聚合 app_events 生成 app_rankings（hot / download / favorite 榜）。
+ *
+ * 关键改进：
+ * 1. 分批处理 events，避免一次拉取过多数据
+ * 2. 支持黑名单过滤（ranking_denylist）
+ * 3. 计算热度分：view*1 + download*5 + favorite*3
  */
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
@@ -12,134 +15,125 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
 }
 
-type Period = 'week' | 'month' | 'all'
-
-const PERIOD_INTERVALS: Record<Period, string> = {
-  week:  '7 days',
-  month: '30 days',
-  all:   '3650 days',
-}
-
-// 热度分权重
-const WEIGHTS = { download: 5, favorite: 3, view: 1 }
+const PERIOD_DAYS: Record<string, number> = { week: 7, month: 30, all: 3650 }
+const WEIGHTS = { view: 1, download: 5, favorite: 3 }
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+    { auth: { persistSession: false } },
+  )
+
   try {
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-      { auth: { persistSession: false } }
-    )
+    const result: Array<{ period: string; hot: number; download: number; favorite: number }> = []
 
-    const periods: Period[] = ['week', 'month', 'all']
-    let totalUpserted = 0
+    for (const [period, days] of Object.entries(PERIOD_DAYS)) {
+      const cutoff = new Date(Date.now() - days * 24 * 3600 * 1000)
 
-    // 加载黑名单，聚合时跳过这些无安装包的项目
-    const { data: denyRows } = await supabase
-      .from('ranking_denylist')
-      .select('owner, repo')
-    const denySet = new Set<string>(
-      (denyRows ?? []).map((r: any) => `${r.owner}/${r.repo}`)
-    )
+      // --- 1. 黑名单 ---
+      const denySet = new Set<string>()
+      try {
+        const { data: denyRows } = await supabase.from('ranking_denylist').select('owner, repo')
+        ;(denyRows || []).forEach((r: any) => {
+          if (r.owner && r.repo) denySet.add(`${r.owner}/${r.repo}`)
+        })
+      } catch { /* ignore */ }
 
-    for (const period of periods) {
-      const interval = PERIOD_INTERVALS[period]
+      // --- 2. 聚合：按 owner/repo 汇总各事件数 ---
+      const appMeta = new Map<string, { app_id: number | null; app_name: string; avatar_url: string }>()
+      const appCountMap = new Map<string, { view: number; download: number; favorite: number }>()
 
-      // 聚合每个 app 各事件类型的计数
-      const { data: aggData, error: aggErr } = await supabase
-        .from('app_events')
-        .select('app_id, app_name, owner, repo, avatar_url, event_type')
-        .gte('created_at', new Date(Date.now() - parseDays(interval) * 86400_000).toISOString())
-      if (aggErr) throw aggErr
+      for (const evType of ['view', 'download', 'favorite'] as const) {
+        let page = 0
+        let done = false
+        while (!done) {
+          const { data: rows, error } = await supabase
+            .from('app_events')
+            .select('owner, repo, app_id, app_name, avatar_url')
+            .gte('created_at', cutoff.toISOString())
+            .eq('event_type', evType)
+            .range(page * 1000, (page + 1) * 1000 - 1)
 
-      // 按 app_id 合并
-      type AppStat = {
-        app_id: number; app_name: string; owner: string; repo: string; avatar_url: string
-        download: number; favorite: number; view: number
-      }
-      const statsMap = new Map<number, AppStat>()
-      for (const row of aggData ?? []) {
-        // 跳过黑名单项目（owner/repo 为空也跳过）
-        if (!row.owner || !row.repo) continue
-        if (denySet.has(`${row.owner}/${row.repo}`)) continue
-        const id = Number(row.app_id)
-        if (!statsMap.has(id)) {
-          statsMap.set(id, {
-            app_id: id, app_name: row.app_name ?? '', owner: row.owner ?? '',
-            repo: row.repo ?? '', avatar_url: row.avatar_url ?? '',
-            download: 0, favorite: 0, view: 0,
-          })
+          if (error) {
+            console.warn(`[aggregate] Error querying ${evType}:`, error.message)
+            break
+          }
+          if (!rows || rows.length === 0) { done = true; break }
+
+          for (const r of rows as any[]) {
+            if (!r.owner || !r.repo) continue
+            const key = `${r.owner}/${r.repo}`
+            if (denySet.has(key)) continue
+
+            if (!appMeta.has(key)) {
+              appMeta.set(key, { app_id: r.app_id || null, app_name: r.app_name || '', avatar_url: r.avatar_url || '' })
+            }
+            if (!appCountMap.has(key)) appCountMap.set(key, { view: 0, download: 0, favorite: 0 })
+            appCountMap.get(key)![evType]++
+          }
+
+          if (rows.length < 1000) done = true
+          page++
+          if (page > 10) {
+            console.warn(`[aggregate] Too many pages for ${evType}`)
+            break
+          }
         }
-        const s = statsMap.get(id)!
-        // 用任意非空值更新元数据（旧事件可能缺 owner/repo）
-        if (!s.owner && row.owner)           s.owner      = row.owner
-        if (!s.repo && row.repo)             s.repo       = row.repo
-        if (!s.avatar_url && row.avatar_url) s.avatar_url = row.avatar_url
-        if (!s.app_name && row.app_name)     s.app_name   = row.app_name
-        if (row.event_type === 'download') s.download++
-        else if (row.event_type === 'favorite') s.favorite++
-        else if (row.event_type === 'view') s.view++
       }
 
-      if (statsMap.size === 0) continue
+      // --- 3. 计算各榜单 ---
+      const allApps = Array.from(appCountMap.entries()).map(([key, counts]) => {
+        const meta = appMeta.get(key) || { app_id: null, app_name: '', avatar_url: '' }
+        const [owner, repo] = key.split('/')
+        return {
+          app_id: meta.app_id, owner, repo, app_name: meta.app_name, avatar_url: meta.avatar_url,
+          view_count: counts.view, download_count: counts.download, favorite_count: counts.favorite,
+          score: counts.view * WEIGHTS.view + counts.download * WEIGHTS.download + counts.favorite * WEIGHTS.favorite,
+        }
+      })
 
-      // 生成综合热度榜（top 50）
-      const hotList = Array.from(statsMap.values())
-        .map((s) => ({ ...s, score: s.download * WEIGHTS.download + s.favorite * WEIGHTS.favorite + s.view * WEIGHTS.view }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 50)
+      const hot = allApps.slice().sort((a, b) => b.score - a.score).slice(0, 50)
+      const dl = allApps.filter((a) => a.download_count > 0).sort((a, b) => b.download_count - a.download_count).slice(0, 50)
+      const fav = allApps.filter((a) => a.favorite_count > 0).sort((a, b) => b.favorite_count - a.favorite_count).slice(0, 50)
 
-      const hotRows = hotList.map((s, i) => ({
-        rank_type: 'hot', period, app_id: s.app_id, app_name: s.app_name,
-        owner: s.owner, repo: s.repo, avatar_url: s.avatar_url,
-        score: s.score, download_count: s.download, favorite_count: s.favorite,
-        view_count: s.view, rank_position: i + 1, updated_at: new Date().toISOString(),
-      }))
+      // --- 4. 删除旧数据，写入新数据 ---
+      await supabase.from('app_rankings').delete().eq('period', period).catch(() => {})
 
-      // 下载榜
-      const dlList = Array.from(statsMap.values())
-        .filter((s) => s.download > 0).sort((a, b) => b.download - a.download).slice(0, 50)
-      const dlRows = dlList.map((s, i) => ({
-        rank_type: 'download', period, app_id: s.app_id, app_name: s.app_name,
-        owner: s.owner, repo: s.repo, avatar_url: s.avatar_url,
-        score: s.download, download_count: s.download, favorite_count: s.favorite,
-        view_count: s.view, rank_position: i + 1, updated_at: new Date().toISOString(),
-      }))
+      const makeRows = (arr: typeof allApps, type: string, scoreField: 'score' | 'download_count' | 'favorite_count') =>
+        arr.map((a, idx) => ({
+          rank_type: type, period, app_id: a.app_id, app_name: a.app_name,
+          owner: a.owner, repo: a.repo, avatar_url: a.avatar_url,
+          score: a[scoreField], download_count: a.download_count,
+          favorite_count: a.favorite_count, view_count: a.view_count,
+          rank_position: idx + 1, updated_at: new Date().toISOString(),
+        }))
 
-      // 收藏榜
-      const favList = Array.from(statsMap.values())
-        .filter((s) => s.favorite > 0).sort((a, b) => b.favorite - a.favorite).slice(0, 50)
-      const favRows = favList.map((s, i) => ({
-        rank_type: 'favorite', period, app_id: s.app_id, app_name: s.app_name,
-        owner: s.owner, repo: s.repo, avatar_url: s.avatar_url,
-        score: s.favorite, download_count: s.download, favorite_count: s.favorite,
-        view_count: s.view, rank_position: i + 1, updated_at: new Date().toISOString(),
-      }))
+      const rows = [
+        ...makeRows(hot, 'hot', 'score'),
+        ...makeRows(dl, 'download', 'download_count'),
+        ...makeRows(fav, 'favorite', 'favorite_count'),
+      ]
 
-      const allRows = [...hotRows, ...dlRows, ...favRows]
+      if (rows.length > 0) {
+        await supabase.from('app_rankings').insert(rows).then(null, (e) => console.warn('[aggregate] insert:', e))
+      }
 
-      const { error: upsertErr } = await supabase
-        .from('app_rankings')
-        .upsert(allRows, { onConflict: 'rank_type,period,app_id' })
-      if (upsertErr) throw upsertErr
-      totalUpserted += allRows.length
+      result.push({ period, hot: hot.length, download: dl.length, favorite: fav.length })
+      console.log(`[aggregate] period=${period}: hot=${hot.length}, dl=${dl.length}, fav=${fav.length}`)
     }
 
-    return new Response(JSON.stringify({ ok: true, upserted: totalUpserted }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    })
+    return new Response(
+      JSON.stringify({ ok: true, periods: result }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+    )
   } catch (err: any) {
-    console.error('[aggregate-rankings]', err)
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    })
+    console.error('[aggregate-rankings] FATAL:', err)
+    return new Response(
+      JSON.stringify({ error: err.message || 'Unknown error' }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+    )
   }
 })
-
-function parseDays(interval: string): number {
-  const m = interval.match(/(\d+)\s*days?/)
-  return m ? Number(m[1]) : 7
-}

@@ -3,26 +3,10 @@ import { View, Text, Pressable, FlatList, ActivityIndicator, RefreshControl } fr
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { supabase } from '@/client/supabase';
+import { queryCatalog } from '@/client/store';
 import type { AppItem } from '@/types';
 import { getTopAppsByScore, getPopularKeywords, type TimeRange } from '@/lib/events';
 import AppCard from '@/components/openappstore/AppCard';
-
-/** 从 app_catalog 行映射到 AppItem（catalog 内只有有安装包的项目） */
-function rowToAppItem(r: any): AppItem {
-  return {
-    id: r.id, full_name: r.full_name, name: r.name,
-    description: r.description, owner: r.owner, repo: r.repo,
-    avatar_url: r.avatar_url || '', stars: r.stars || 0,
-    forks: r.forks || 0, language: r.language, topics: r.topics || [],
-    platforms: r.platforms || [], latest_version: r.latest_version,
-    latest_release_date: r.latest_release_date,
-    html_url: r.html_url || `https://github.com/${r.owner}/${r.repo}`,
-    updated_at: r.updated_at || '', license: r.license,
-    archived: r.archived || false, open_issues_count: r.open_issues_count || 0,
-    total_downloads: r.total_downloads || 0, has_installable_assets: true,
-  };
-}
 
 type RankType = 'hot' | 'download' | 'star' | 'trending';
 
@@ -78,21 +62,22 @@ export default function RankingsScreen() {
   const loadApps = useCallback(async (isRefresh = false) => {
     if (!isRefresh) setLoading(true);
     try {
-      // 直接查 app_catalog，绕开 Edge Function，零冷启动
-      const sortMap: Record<string, string> = {
-        hot: 'stars', download: 'total_downloads', star: 'stars', trending: 'updated_at',
+      // 使用统一查询层：根据榜单类型映射到 store 的 sort 参数
+      const sortMap: Record<string, 'stars' | 'downloads' | 'updated'> = {
+        hot: 'stars',
+        download: 'downloads',
+        star: 'stars',
+        trending: 'updated',
       };
-      const col = sortMap[activeRank] ?? 'stars';
-      const { data, error } = await supabase
-        .from('app_catalog')
-        .select('*')
-        .eq('archived', false)
-        .order(col, { ascending: false })
-        .limit(20);
-      if (error) throw error;
-      setApps((data || []).map(rowToAppItem));
-    } catch (e) {
-      console.warn('榜单加载失败', e);
+      const sort = sortMap[activeRank] ?? 'stars';
+      console.log('[Rankings] loadApps:', { activeRank, sort });
+
+      const { items, error } = await queryCatalog({ sort, page: 1, per_page: 20 });
+      if (error) throw new Error(error);
+      console.log('[Rankings] loadApps done:', items.length, 'items');
+      setApps(items);
+    } catch (e: any) {
+      console.warn('[Rankings] 榜单加载失败:', e?.message || e);
     } finally {
       setLoading(false);
       setRefreshing(false);
