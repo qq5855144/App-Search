@@ -169,7 +169,24 @@ export default function SearchTab() {
           keyboardShouldPersistTaps="handled"
           renderItem={({ item }) => <AppCard app={item} />}
           contentContainerStyle={{ paddingBottom: 24 }}
-          ListEmptyComponent={<View style={{ alignItems: 'center', paddingTop: 60 }}><Text style={{ color: '#AAA' }}>未找到相关应用</Text></View>}
+          ListHeaderComponent={
+            <View style={{ paddingHorizontal: 16, paddingVertical: 8 }}>
+              <Text style={{ fontSize: 13, color: '#888' }}>
+                共找到 {results.length} 个应用
+              </Text>
+            </View>
+          }
+          ListEmptyComponent={
+            <View style={{ alignItems: 'center', paddingTop: 60, gap: 8 }}>
+              <Ionicons name="search-outline" size={48} color="#CCC" />
+              <Text style={{ color: '#888', fontSize: 15, fontWeight: '600' }}>
+                未找到相关应用
+              </Text>
+              <Text style={{ color: '#BBB', fontSize: 13 }}>
+                已搜索全部 36 个应用，换个关键词试试
+              </Text>
+            </View>
+          }
         />
       )}
     </SafeAreaView>
