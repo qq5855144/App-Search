@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { addSearchHistory, clearSearchHistory, getSearchHistory } from '@/lib/database';
 import { addAppEvent, uploadPendingEventsToTrack } from '@/lib/events';
 import { searchRepos } from '@/lib/github';
-import { getHotWords } from '@/client/store';
+import { supabase } from '@/client/supabase';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
 
@@ -47,14 +47,16 @@ export default function SearchTab() {
 
   const loadHotWords = useCallback(async () => {
     try {
-      // 统一入口：store.getHotWords → supabase.rpc('get_hot_keywords', {limit_n})
-      // 5 分钟客户端缓存，避免频繁调用
-      const words = await getHotWords(20);
-      const safe = words.filter(isSafeKeyword);
-      if (safe.length > 0) { setHotWords(safe); return; }
-    } catch { /* 静默失败，展示默认空状态 */ }
-
-    // 兜底：读本地 events 里的高频搜索词
+      // 通过 SECURITY DEFINER RPC 绕过 RLS，读取全局热搜词排行
+      const { data, error } = await supabase.rpc('get_hot_keywords', { limit_n: 20 });
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const words = (data as { keyword: string; cnt: number }[])
+          .map((r) => r.keyword)
+          .filter(isSafeKeyword);
+        if (words.length > 0) { setHotWords(words); return; }
+      }
+    } catch { /* 网络失败降级到本地 */ }
+    // 兜底：读本地 events
     try {
       const { getPopularKeywords } = await import('@/lib/events');
       const kws = await getPopularKeywords(20);
@@ -85,9 +87,9 @@ export default function SearchTab() {
 
     if (!isLoadMore) {
       try { addSearchHistory(k).then(loadHistory); } catch { /* ignore */ }
-      addAppEvent({ event_type: 'search', keyword: k }).catch(() => {})
-      // 异步上传本地事件到 Supabase（不阻塞 UI）
-      uploadPendingEventsToTrack().catch(() => {})
+      addAppEvent({ event_type: 'search', keyword: k })
+        .then(() => uploadPendingEventsToTrack())
+        .catch(() => {});
 
       lastKeywordRef.current = k;
       autoRetryRef.current = 0;
