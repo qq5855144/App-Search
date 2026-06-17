@@ -10,9 +10,11 @@ interface AppIconProps {
   name: string;
   size?: number;
   className?: string;
+  /** expo-image 加载优先级，榜单前几名传 "high" */
+  priority?: 'low' | 'normal' | 'high';
 }
 
-// 模块级缓存：owner → 数字 ID 头像 URL，避免 FlatList 滚动时重复请求
+// 模块级缓存：owner → 经 API 确认的数字 ID 头像 URL（仅在图片加载失败时才写入）
 const _ownerAvatarCache = new Map<string, string>();
 // 正在请求中的 owner，防止并发重复请求
 const _pendingFetch = new Set<string>();
@@ -26,8 +28,14 @@ function isValidHttpUrl(s: string): boolean {
   }
 }
 
-/** 统一规范化 avatar URL，优先使用数字 ID 直链 */
+/**
+ * 统一规范化 avatar URL
+ * - 有效 URL 直接用（avatars.githubusercontent.com 用户名 CDN 直链无需额外 API）
+ * - 无 URL 时按 owner 构造用户名 CDN URL（GitHub 官方稳定直链）
+ */
 function normalizeAvatarUrl(url: string | null | undefined, owner: string): string | null {
+  // 优先使用 API fallback 缓存（仅在上次加载失败后才有值）
+  if (owner && _ownerAvatarCache.has(owner)) return _ownerAvatarCache.get(owner)!;
   if (url && isValidHttpUrl(url)) {
     // github.com/*.png 跳转链 → 转为 CDN 直链
     if (url.includes('github.com') && url.endsWith('.png')) {
@@ -36,15 +44,16 @@ function normalizeAvatarUrl(url: string | null | undefined, owner: string): stri
     }
     return url;
   }
-  // 检查模块缓存中是否已有该 owner 的数字 ID URL
-  if (owner && _ownerAvatarCache.has(owner)) return _ownerAvatarCache.get(owner)!;
-  // 兜底：用户名方式（稳定可用，后台会异步替换为数字 ID URL）
+  // 用户名 CDN 直链：GitHub 官方支持，无需重定向，直接命中 CDN
   if (owner) return `https://avatars.githubusercontent.com/${owner}?size=120`;
   return null;
 }
 
-/** 通过 GitHub API 获取 owner 的真实数字 ID 头像 URL，缓存到模块级 Map */
-async function fetchAndCacheAvatarUrl(owner: string): Promise<string | null> {
+/**
+ * 仅在图片加载失败时调用：通过 GitHub API 获取数字 ID 头像 URL 作为 fallback
+ * 不在组件挂载时主动调用，避免 N 个并发请求导致乱序加载
+ */
+async function fetchAvatarUrlFallback(owner: string): Promise<string | null> {
   if (_ownerAvatarCache.has(owner)) return _ownerAvatarCache.get(owner)!;
   if (_pendingFetch.has(owner)) return null;
   _pendingFetch.add(owner);
@@ -59,27 +68,22 @@ async function fetchAndCacheAvatarUrl(owner: string): Promise<string | null> {
       return data.avatar_url;
     }
   } catch {
-    // 静默失败，保持兜底 URL
+    // 静默失败
   } finally {
     _pendingFetch.delete(owner);
   }
   return null;
 }
 
-export default function AppIcon({ owner = '', url, name, size = 48, className = '' }: AppIconProps) {
+export default function AppIcon({ owner = '', url, name, size = 48, className = '', priority = 'normal' }: AppIconProps) {
   const initialUrl = useMemo(() => normalizeAvatarUrl(url, owner), [url, owner]);
   const [resolvedUrl, setResolvedUrl] = useState<string | null>(initialUrl);
   const [error, setError] = useState(false);
 
-  // 当 url 为空且 owner 存在时，后台调 API 获取数字 ID 头像 URL
+  // url/owner 变化时重置状态（不主动发起 API 请求）
   useEffect(() => {
     setResolvedUrl(normalizeAvatarUrl(url, owner));
     setError(false);
-    if (owner && (!url || !isValidHttpUrl(url))) {
-      fetchAndCacheAvatarUrl(owner).then((apiUrl) => {
-        if (apiUrl) setResolvedUrl(apiUrl);
-      });
-    }
   }, [url, owner]);
 
   if (!resolvedUrl || error) {
@@ -101,11 +105,12 @@ export default function AppIcon({ owner = '', url, name, size = 48, className = 
         style={{ width: size, height: size }}
         contentFit="cover"
         transition={200}
+        priority={priority}
         onError={() => {
-          // URL 加载失败时尝试 API 获取
+          // 仅在加载失败时才调 API 获取 fallback URL，不影响其他正常加载的图片
           if (owner) {
-            _ownerAvatarCache.delete(owner); // 清除可能的错误缓存
-            fetchAndCacheAvatarUrl(owner).then((apiUrl) => {
+            _ownerAvatarCache.delete(owner);
+            fetchAvatarUrlFallback(owner).then((apiUrl) => {
               if (apiUrl) { setResolvedUrl(apiUrl); setError(false); }
               else setError(true);
             });
