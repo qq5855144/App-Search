@@ -3,7 +3,7 @@ import { View, Text, Pressable, FlatList, ActivityIndicator, ScrollView } from '
 import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { LOCAL_CATALOG } from '@/lib/catalog';
+import { supabase } from '@/client/supabase';
 import { clearAllCache } from '@/lib/cache';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
@@ -35,46 +35,20 @@ const SORT_OPTIONS: { key: string; label: string; icon: string }[] = [
   { key: 'forks',   label: 'Forks',   icon: 'git-branch-outline' },
 ];
 
-
-/** 从本地目录加载发现页数据，无任何网络依赖 */
-function fetchLocalCatalog(params: {
-  platform: string; topic: string; sort: string; page: number; per_page: number;
-}): { items: AppItem[]; total_count: number } {
-  const { platform, topic, sort, page, per_page } = params;
-
-  let pool = LOCAL_CATALOG;
-  if (platform && platform !== '全平台') {
-    pool = pool.filter((r) => r.platforms?.includes(platform));
-  }
-  if (topic) {
-    pool = pool.filter((r) => r.topics?.includes(topic));
-  }
-
-  // 排序
-  pool = [...pool].sort((a, b) => {
-    if (sort === 'updated') return (b.updated_at || '').localeCompare(a.updated_at || '');
-    if (sort === 'forks') return (b.forks || 0) - (a.forks || 0);
-    return (b.stars || 0) - (a.stars || 0);
-  });
-
-  const offset = (page - 1) * per_page;
-  return { items: pool.slice(offset, offset + per_page), total_count: pool.length };
-}
-
 export default function DiscoverTab() {
   const [apps, setApps] = useState<AppItem[]>([]);
-  const [loading, setLoading] = useState(true);  // 初始为 true，避免首帧闪现"暂无数据"
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [platform, setPlatform] = useState<string>('全平台');
   const [category, setCategory] = useState<string>('全部');
   const [sort, setSort] = useState<string>('stars');
-  const [hasMore, setHasMore] = useState(false); // 初始 false，首次加载成功后才置 true
+  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string>('');
   const loadingRef = useRef(false);
-  const pageRef = useRef(1);          // 用 ref 追踪页码，避免 stale closure
-  const hasFetchedRef = useRef(false); // 首次请求发出后才允许 onEndReached 分页
+  const pageRef = useRef(1);
+  const hasFetchedRef = useRef(false);
 
-  const loadData = useCallback((
+  const loadData = useCallback(async (
     pageNum = 1, isRefresh = false,
     p = platform, cat = category, s = sort,
   ) => {
@@ -82,18 +56,24 @@ export default function DiscoverTab() {
     loadingRef.current = true;
     hasFetchedRef.current = true;
     setError('');
+    if (isRefresh) setRefreshing(true);
+    else if (pageNum === 1) setLoading(true);
+
     try {
-      if (isRefresh) setRefreshing(true);
-      else if (pageNum === 1) setLoading(true);
       const topic = CATEGORIES.find((c) => c.key === cat)?.topic ?? '';
-      // 完全本地，同步，零网络依赖
-      const { items } = fetchLocalCatalog({ platform: p, topic, sort: s, page: pageNum, per_page: 20 });
+      const { data, error: fnErr } = await supabase.functions.invoke('search-catalog', {
+        body: { platform: p !== '全平台' ? p : undefined, topic: topic || undefined, sort: s, page: pageNum, per_page: 20 },
+      });
+      if (fnErr) {
+        const msg = await fnErr?.context?.text?.().catch(() => '');
+        throw new Error(msg || fnErr.message || '加载失败');
+      }
+      const items: AppItem[] = Array.isArray(data?.data) ? data.data : [];
       if (pageNum === 1) setApps(items);
       else setApps((prev) => [...prev, ...items]);
       pageRef.current = pageNum;
-      setHasMore(items.length >= 20);
+      setHasMore(items.length === 20);
     } catch (e: any) {
-      console.warn('[Discover] Load failed:', e);
       setError(e?.message || '加载失败，请检查网络后重试');
     } finally {
       setLoading(false);
