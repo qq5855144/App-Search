@@ -4,7 +4,6 @@ import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/client/supabase';
-import { searchRepos } from '@/lib/github';
 import { clearAllCache } from '@/lib/cache';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
@@ -63,30 +62,14 @@ function rowToAppItem(r: any): AppItem {
   };
 }
 
-/** 调用 search-catalog Edge Function，空目录时降级到 GitHub 搜索 */
+/** 调用 search-catalog Edge Function，只返回 app_catalog 中有安装包的项目 */
 async function fetchCatalog(params: {
   platform: string; topic: string; sort: string; page: number; per_page: number;
-}): Promise<{ items: AppItem[]; total_count: number; fromCatalog: boolean }> {
-  try {
-    const { data, error } = await supabase.functions.invoke('search-catalog', { body: params });
-    if (error) throw error;
-    const items: AppItem[] = (data?.data || []).map(rowToAppItem);
-    if (items.length > 0) return { items, total_count: data.total_count || items.length, fromCatalog: true };
-  } catch (e) {
-    console.warn('[Discover] search-catalog failed, fallback to GitHub:', e);
-  }
-  // 降级：目录为空时走 GitHub API（保证首次部署有数据）
-  const platformMap: Record<string, string> = {
-    'Android': 'topic:android', 'iOS': 'topic:ios',
-    'Windows': 'topic:windows', 'macOS': 'topic:macos', 'Linux': 'topic:linux',
-  };
-  const topicPart = params.topic ? `topic:${params.topic}` : 'app release';
-  const platPart = params.platform !== '全平台' ? `${platformMap[params.platform] ?? ''} ` : '';
-  const q = `${platPart}${topicPart} stars:>100 archived:false`;
-  const { items, total_count } = await searchRepos(q, {
-    sort: params.sort, page: params.page, per_page: params.per_page,
-  });
-  return { items, total_count, fromCatalog: false };
+}): Promise<{ items: AppItem[]; total_count: number }> {
+  const { data, error } = await supabase.functions.invoke('search-catalog', { body: params });
+  if (error) throw new Error(error.message || '加载失败');
+  const items: AppItem[] = (data?.data || []).map(rowToAppItem);
+  return { items, total_count: data?.total_count || items.length };
 }
 
 export default function DiscoverTab() {
@@ -115,8 +98,7 @@ export default function DiscoverTab() {
       if (isRefresh) setRefreshing(true);
       else if (pageNum === 1) setLoading(true);
       const topic = CATEGORIES.find((c) => c.key === cat)?.topic ?? '';
-      const { items } = await fetchCatalog({ platform: p, topic, sort: s, page: pageNum, per_page: 20 });
-      if (pageNum === 1) setApps(items);
+      const { items } = await fetchCatalog({ platform: p, topic, sort: s, page: pageNum, per_page: 20 });      if (pageNum === 1) setApps(items);
       else setApps((prev) => [...prev, ...items]);
       setHasMore(items.length >= 20);
     } catch (e: any) {
