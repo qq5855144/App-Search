@@ -56,6 +56,39 @@ jobs:
         env:
           CI: true
 
+      - name: Fix Gradle network timeout and add China mirrors
+        run: |
+          # Fix network timeout (10s -> 120s)
+          sed -i 's/networkTimeout=10000/networkTimeout=120000/' android/gradle/wrapper/gradle-wrapper.properties
+
+          # Add Aliyun mirrors to build.gradle
+          python3 << 'PYEOF'
+          import re
+
+          path = 'android/build.gradle'
+          with open(path, 'r') as f:
+              content = f.read()
+
+          # Add aliyun mirrors to buildscript repositories
+          if 'maven.aliyun.com' not in content:
+              # buildscript repos
+              content = re.sub(
+                  r'(buildscript\s*\{\s*repositories\s*\{)',
+                  r'\1\n    maven { url \'https://maven.aliyun.com/repository/google\' }\n    maven { url \'https://maven.aliyun.com/repository/public\' }\n    maven { url \'https://maven.aliyun.com/repository/gradle-plugin\' }',
+                  content
+              )
+              # allprojects repos
+              content = re.sub(
+                  r'(allprojects\s*\{\s*repositories\s*\{)',
+                  r'\1\n    maven { url \'https://maven.aliyun.com/repository/google\' }\n    maven { url \'https://maven.aliyun.com/repository/public\' }',
+                  content
+              )
+
+          with open(path, 'w') as f:
+              f.write(content)
+          print("Added Aliyun mirrors to android/build.gradle")
+          PYEOF
+
       - name: Force arm64-v8a only (strip all other ABIs)
         run: |
           python3 << 'PYEOF'
