@@ -38,6 +38,8 @@ export default function SearchTab() {
   const [loadingMore, setLoadingMore] = useState(false);
   const loadingRef = useRef(false);
   const lastKeywordRef = useRef('');
+  const autoRetryRef = useRef(0);   // 连续空页自动翻页计数，防无限循环
+  const MAX_AUTO_RETRY = 5;         // 最多连续跳过 5 个空页
 
   const loadHistory = useCallback(async () => {
     try { setHistory(await getSearchHistory()); } catch { /* ignore */ }
@@ -88,6 +90,7 @@ export default function SearchTab() {
       addAppEvent({ event_type: 'search', keyword: k }).catch(() => {});
 
       lastKeywordRef.current = k;
+      autoRetryRef.current = 0;
       setSearched(true);
       setLoading(true);
       setError('');
@@ -100,28 +103,40 @@ export default function SearchTab() {
       setLoadingMore(true);
     }
 
-    // 远程搜索（异步，installableOnly=true）
+    // 远程搜索（installableOnly=true，per_page=100 增大候选池）
     try {
       const result = await searchRepos(k, {
         sort: 'stars',
         order: 'desc',
         page: pageNum,
-        per_page: 50,
+        per_page: 100,
         installableOnly: true,
       });
 
+      const morePages = result.total_count > pageNum * 100;
+
       if (!isLoadMore) {
+        autoRetryRef.current = 0;
         setResults(result.items);
         setSearchSource(result.items.length > 0 ? 'remote' : 'local');
         setTotalCount(result.total_count);
-        // hasMore：只要 GitHub 还有更多页就继续，installableOnly 会大幅过滤结果
-        setHasMore(result.total_count > pageNum * 50);
+        setHasMore(morePages);
         setError('');
-        // 搜索成功后刷新热词
         loadHotWords();
       } else {
+        if (result.items.length === 0 && morePages && autoRetryRef.current < MAX_AUTO_RETRY) {
+          // 当页全被过滤掉→静默翻到下一页，不闪烁 spinner
+          autoRetryRef.current += 1;
+          setLoadingMore(false);
+          loadingRef.current = false;
+          setPage(pageNum);
+          // 直接继续下一页，不走 finally
+          performSearch(k, pageNum + 1, true);
+          return;
+        }
+        autoRetryRef.current = 0;
         setResults((prev) => [...prev, ...result.items]);
-        setHasMore(result.total_count > pageNum * 50);
+        setHasMore(morePages && result.items.length > 0);
       }
       setPage(pageNum);
     } catch (e: any) {
@@ -245,7 +260,7 @@ export default function SearchTab() {
             <View style={{ paddingHorizontal: 16, paddingVertical: 8, gap: 4 }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Text style={{ fontSize: 13, color: '#888' }}>
-                  共找到 {totalCount > 0 ? totalCount : results.length} 个应用
+                  GitHub 共匹配 {totalCount > 0 ? totalCount.toLocaleString() : results.length} 个项目，已过滤无发行版
                 </Text>
                 {searchSource === 'remote' && (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
