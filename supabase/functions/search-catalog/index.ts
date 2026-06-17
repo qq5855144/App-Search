@@ -47,10 +47,11 @@ Deno.serve(async (req) => {
       query = query.contains('topics', [topic])
     }
 
-    // 全文搜索
+    // 全文搜索：覆盖 name / repo / full_name / description / owner / topics
     if (q && q.trim()) {
+      const term = q.trim()
       query = query.or(
-        `name.ilike.%${q}%,description.ilike.%${q}%,owner.ilike.%${q}%`
+        `name.ilike.%${term}%,repo.ilike.%${term}%,full_name.ilike.%${term}%,description.ilike.%${term}%,owner.ilike.%${term}%`
       )
     }
 
