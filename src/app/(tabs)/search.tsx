@@ -81,21 +81,11 @@ export default function SearchTab() {
     addAppEvent({ event_type: 'search', keyword: k }).catch(() => {});
     try {
       setLoading(true); setSearched(true); setError('');
-      // 直接查 app_catalog，绕开 Edge Function，零冷启动，永远可靠
-      const term = k.toLowerCase();
-      const { data, error: dbError } = await supabase
-        .from('app_catalog')
-        .select('*')
-        .or(
-          `name.ilike.%${term}%,` +
-          `repo.ilike.%${term}%,` +
-          `full_name.ilike.%${term}%,` +
-          `description.ilike.%${term}%,` +
-          `owner.ilike.%${term}%`
-        )
-        .order('stars', { ascending: false })
-        .limit(30);
-      if (dbError) throw new Error(dbError.message || '搜索失败');
+      // 调用服务端 RPC，绕开 JS 客户端 URL 编码对 % 的歧义处理
+      // search_apps() 内部用 latest_version IS NOT NULL 过滤无安装包项目
+      const { data, error: rpcError } = await supabase
+        .rpc('search_apps', { q: k, lim: 30 });
+      if (rpcError) throw new Error(rpcError.message || '搜索失败');
       const items: AppItem[] = (data || []).map((r: any): AppItem => ({
         id: r.id, full_name: r.full_name, name: r.name,
         description: r.description, owner: r.owner, repo: r.repo,
