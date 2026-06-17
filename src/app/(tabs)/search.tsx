@@ -24,8 +24,8 @@ function isSafeKeyword(kw: string): boolean {
 
 export default function SearchTab() {
   const inputRef = useRef<TextInput>(null);
-  const textRef = useRef('');
-  const [hasText, setHasText] = useState(false);
+  // 受控输入：value 绑定 state，彻底消除 ref 时序问题
+  const [inputValue, setInputValue] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [hotWords, setHotWords] = useState<string[]>([]);
   const [results, setResults] = useState<AppItem[]>([]);
@@ -132,7 +132,7 @@ export default function SearchTab() {
     }
   };
 
-  const clearInput = () => { inputRef.current?.clear(); textRef.current = ''; setHasText(false); };
+  const clearInput = () => { setInputValue(''); };
   const handleCancel = () => { clearInput(); setSearched(false); setResults([]); setError(''); };
   const tagStyle = { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 18, borderWidth: 1, borderColor: '#E8E8E8', backgroundColor: '#fff' } as const;
 
@@ -146,17 +146,25 @@ export default function SearchTab() {
             style={{ flex: 1, fontSize: 15, color: '#1A1A1A' } as any}
             placeholder="搜索开源应用…"
             placeholderTextColor="#AAA"
-            onChangeText={(t) => { textRef.current = t; setHasText(t.length > 0); }}
-            onSubmitEditing={() => performSearch(textRef.current)}
+            value={inputValue}
+            onChangeText={setInputValue}
+            onSubmitEditing={(e) => performSearch(e.nativeEvent.text || inputValue)}
             returnKeyType="search"
             underlineColorAndroid="transparent"
           />
-          {hasText && (
+          {inputValue.length > 0 && (
             <Pressable onPress={clearInput} hitSlop={8}>
               <Ionicons name="close-circle" size={16} color="#AAA" />
             </Pressable>
           )}
         </View>
+        {/* 搜索按钮：确保任何情况都能触发搜索，不依赖键盘提交 */}
+        <Pressable
+          onPress={() => performSearch(inputValue)}
+          style={{ backgroundColor: '#1677FF', borderRadius: 10, height: 40, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center' }}
+        >
+          <Text style={{ color: '#fff', fontWeight: '600', fontSize: 15 }}>搜索</Text>
+        </Pressable>
         {searched && (
           <Pressable onPress={handleCancel} hitSlop={8}>
             <Text style={{ color: '#1677FF', fontSize: 15 }}>取消</Text>
