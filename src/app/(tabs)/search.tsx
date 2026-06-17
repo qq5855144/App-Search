@@ -4,7 +4,6 @@ import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/client/supabase';
-import { searchRepos } from '@/lib/github';
 import { addSearchHistory, clearSearchHistory, getSearchHistory } from '@/lib/database';
 import { addAppEvent } from '@/lib/events';
 import type { AppItem } from '@/types';
@@ -82,32 +81,23 @@ export default function SearchTab() {
     addAppEvent({ event_type: 'search', keyword: k }).catch(() => {});
     try {
       setLoading(true); setSearched(true); setError('');
-      // 优先查 app_catalog（服务端预处理，结果均有安装包）
-      let items: AppItem[] = [];
-      try {
-        const { data, error } = await supabase.functions.invoke('search-catalog', {
-          body: { q: k, sort: 'stars', per_page: 30, page: 1 },
-        });
-        if (!error && Array.isArray(data?.data) && data.data.length > 0) {
-          items = data.data.map((r: any): AppItem => ({
-            id: r.id, full_name: r.full_name, name: r.name,
-            description: r.description, owner: r.owner, repo: r.repo,
-            avatar_url: r.avatar_url || '', stars: r.stars || 0,
-            forks: r.forks || 0, language: r.language, topics: r.topics || [],
-            platforms: r.platforms || [], latest_version: r.latest_version,
-            latest_release_date: r.latest_release_date,
-            html_url: r.html_url || `https://github.com/${r.owner}/${r.repo}`,
-            updated_at: r.updated_at || '', license: r.license,
-            archived: r.archived || false, open_issues_count: r.open_issues_count || 0,
-            total_downloads: r.total_downloads || 0, has_installable_assets: true,
-          }));
-        }
-      } catch { /* 降级到 GitHub */ }
-      // 目录无结果时降级到 GitHub 搜索
-      if (items.length === 0) {
-        const res = await searchRepos(`${k} stars:>10 archived:false`, { sort: 'stars', per_page: 30 });
-        items = res.items;
-      }
+      // 只查 app_catalog，结果均已验证有安装包
+      const { data, error } = await supabase.functions.invoke('search-catalog', {
+        body: { q: k, sort: 'stars', per_page: 30, page: 1 },
+      });
+      if (error) throw new Error(error.message || '搜索失败');
+      const items: AppItem[] = (data?.data || []).map((r: any): AppItem => ({
+        id: r.id, full_name: r.full_name, name: r.name,
+        description: r.description, owner: r.owner, repo: r.repo,
+        avatar_url: r.avatar_url || '', stars: r.stars || 0,
+        forks: r.forks || 0, language: r.language, topics: r.topics || [],
+        platforms: r.platforms || [], latest_version: r.latest_version,
+        latest_release_date: r.latest_release_date,
+        html_url: r.html_url || `https://github.com/${r.owner}/${r.repo}`,
+        updated_at: r.updated_at || '', license: r.license,
+        archived: r.archived || false, open_issues_count: r.open_issues_count || 0,
+        total_downloads: r.total_downloads || 0, has_installable_assets: true,
+      }));
       setResults(items);
     } catch (e: any) {
       setError(e?.message || '搜索失败');
