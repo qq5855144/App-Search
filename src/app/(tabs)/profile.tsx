@@ -19,7 +19,6 @@ export default function ProfileTab() {
   const router = useRouter();
 
   const [token, setTokenState] = useState('');
-  const [showToken, setShowToken] = useState(false);
   const [tokenExpanded, setTokenExpanded] = useState(false);
   const tokenInputRef = useRef<TextInput>(null);
   const [saving, setSaving] = useState(false);
@@ -241,14 +240,13 @@ export default function ProfileTab() {
                   onChangeText={setTokenState}
                   placeholder="github_pat_..."
                   placeholderTextColor="#BBB"
-                  secureTextEntry={!showToken}
+                  secureTextEntry={false}
                   textContentType="none"
+                  autoComplete="off"
                   autoCapitalize="none"
                   autoCorrect={false}
+                  keyboardType="default"
                 />
-                <Pressable onPress={() => { tokenInputRef.current?.blur(); setShowToken((v) => !v); setTimeout(() => tokenInputRef.current?.focus(), 50); }} hitSlop={8}>
-                  <Ionicons name={showToken ? 'eye-off-outline' : 'eye-outline'} size={18} color="#AAA" />
-                </Pressable>
               </View>
               <View style={{ flexDirection: 'row', gap: 10 }}>
                 <Pressable
