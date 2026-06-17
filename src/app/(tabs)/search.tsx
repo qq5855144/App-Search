@@ -85,8 +85,10 @@ export default function SearchTab() {
       // 首屏直接展示搜索结果，不阻塞等待安装包校验
       const { items } = await searchRepos(`${k} stars:>10 archived:false`, { sort: 'stars', per_page: 30 });
       setResults(items);
-      // 后台静默补充版本/下载量信息
-      enrichAppsInBackground(items, (enriched) => setResults(enriched));
+      // 后台静默补充版本/下载量信息，只保留有安装包的应用
+      enrichAppsInBackground(items, (enriched) => {
+        setResults(enriched.filter((a) => a.has_installable_assets));
+      });
     } catch (e: any) {
       // 保留已有结果，不清空列表；仅展示错误提示
       setError(e?.message || '搜索失败');
