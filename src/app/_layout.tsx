@@ -7,8 +7,10 @@ import * as SplashScreen from 'expo-splash-screen';
 import { initToken } from '@/lib/token';
 import "../global.css";
 
-// 阻止启动屏自动隐藏，等待资源就绪后手动隐藏
-SplashScreen.preventAutoHideAsync().catch(() => {});
+// 仅在 Native 端阻止启动屏自动隐藏（Web 端该 API 是空操作，不会出错）
+if (Platform.OS !== 'web') {
+  SplashScreen.preventAutoHideAsync().catch(() => {});
+}
 
 /** 全局错误边界：捕获任何渲染错误，显示可见提示而非白屏 */
 class ErrorBoundary extends React.Component<
@@ -51,7 +53,9 @@ export default function RootLayout() {
     initToken()
       .catch(() => {})
       .finally(() => {
-        SplashScreen.hideAsync().catch(() => {});
+        if (Platform.OS !== 'web') {
+          SplashScreen.hideAsync().catch(() => {});
+        }
       });
   }, []);
 
@@ -62,8 +66,8 @@ export default function RootLayout() {
         <Stack
           screenOptions={{
             headerShown: false,
-            // 原生滑入动画，比 'none' 更有 app 感
-            animation: Platform.OS === 'android' ? 'fade_from_bottom' : 'default',
+            // 原生滑入动画，Web 保持 none
+            animation: Platform.OS === 'android' ? 'fade_from_bottom' : Platform.OS === 'ios' ? 'default' : 'none',
             // Android 13+ 预测性返回手势
             gestureEnabled: true,
           }}
