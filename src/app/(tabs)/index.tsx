@@ -3,20 +3,27 @@ import { View, Text, Pressable, FlatList, ActivityIndicator } from 'react-native
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { searchRepos, enrichAppsInBackground } from '@/lib/github';
+import { supabase } from '@/client/supabase';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
 import SkeletonCard from '@/components/openappstore/SkeletonCard';
 
-const CATEGORIES = [
-  { key: 'latest',  label: '最新',    icon: 'flash',            color: '#FF6B35', bg: '#FFF3E0', q: 'topic:android-app stars:>100 archived:false',    sort: 'updated' },
-  { key: 'rank',    label: '排行',    icon: 'trophy',           color: '#1677FF', bg: '#EBF3FF', q: 'topic:android-app stars:>2000 archived:false',   sort: 'stars'   },
-  { key: 'android', label: 'Android', icon: 'logo-android',    color: '#3DDC84', bg: '#E8F5E9', q: 'topic:android-app stars:>500 archived:false',    sort: 'stars'   },
-  { key: 'ios',     label: 'iOS',     icon: 'logo-apple',      color: '#1A1A1A', bg: '#F5F5F7', q: 'topic:ios-app stars:>200 archived:false',         sort: 'stars'   },
-  { key: 'windows', label: 'Windows', icon: 'logo-windows',    color: '#00A4EF', bg: '#E3F2FD', q: 'topic:windows-app stars:>200 archived:false',    sort: 'stars'   },
-  { key: 'dev',     label: '开发',    icon: 'hammer',          color: '#9C27B0', bg: '#F3E5F5', q: 'topic:cli stars:>500 archived:false',             sort: 'stars'   },
-  { key: 'media',   label: '媒体',    icon: 'musical-notes',   color: '#E91E63', bg: '#FCE4EC', q: 'topic:music-player stars:>200 archived:false',   sort: 'stars'   },
-  { key: 'game',    label: '游戏',    icon: 'game-controller',  color: '#FF5722', bg: '#FBE9E7', q: 'topic:game stars:>200 archived:false',           sort: 'stars'   },
+const PAGE_SIZE = 20;
+
+// 分类配置：platform/topic 基于 app_catalog 实际数据分布
+// platform=null 表示不限平台；topic=null 表示不限 topic
+const CATEGORIES: {
+  key: string; label: string; icon: string; color: string; bg: string;
+  platform: string | null; topic: string | null; orderBy: string;
+}[] = [
+  { key: 'latest',  label: '最新',    icon: 'flash',           color: '#FF6B35', bg: '#FFF3E0', platform: null,      topic: null,           orderBy: 'updated_at' },
+  { key: 'rank',    label: '排行',    icon: 'trophy',          color: '#1677FF', bg: '#EBF3FF', platform: null,      topic: null,           orderBy: 'stars'      },
+  { key: 'android', label: 'Android', icon: 'logo-android',   color: '#3DDC84', bg: '#E8F5E9', platform: 'Android', topic: null,           orderBy: 'stars'      },
+  { key: 'ios',     label: 'iOS',     icon: 'logo-apple',     color: '#1A1A1A', bg: '#F5F5F7', platform: 'iOS',     topic: null,           orderBy: 'stars'      },
+  { key: 'windows', label: 'Windows', icon: 'logo-windows',   color: '#00A4EF', bg: '#E3F2FD', platform: 'Windows', topic: null,           orderBy: 'stars'      },
+  { key: 'dev',     label: '开发',    icon: 'hammer',         color: '#9C27B0', bg: '#F3E5F5', platform: null,      topic: 'terminal',     orderBy: 'stars'      },
+  { key: 'media',   label: '媒体',    icon: 'musical-notes',  color: '#E91E63', bg: '#FCE4EC', platform: null,      topic: 'music',        orderBy: 'stars'      },
+  { key: 'game',    label: '游戏',    icon: 'game-controller', color: '#FF5722', bg: '#FBE9E7', platform: null,      topic: 'game',         orderBy: 'stars'      },
 ];
 
 export default function HomeTab() {
@@ -37,17 +44,44 @@ export default function HomeTab() {
       setError('');
       if (isRefresh) setRefreshing(true);
       else if (pageNum === 1) setLoading(true);
+
       const cat = CATEGORIES.find((c) => c.key === catKey) || CATEGORIES[0];
-      // 首屏直接展示搜索结果，不阻塞等待安装包校验
-      const { items } = await searchRepos(cat.q, { page: pageNum, per_page: 20, sort: cat.sort || 'stars' });
+      const from = (pageNum - 1) * PAGE_SIZE;
+      const to = from + PAGE_SIZE - 1;
+
+      // 直接查 app_catalog，零冷启动，不依赖 GitHub API
+      let query = supabase
+        .from('app_catalog')
+        .select('*')
+        .eq('archived', false)
+        .not('latest_version', 'is', null) // 只要有安装包的项目
+        .order(cat.orderBy, { ascending: false })
+        .range(from, to);
+
+      // 平台过滤：platforms 是数组，用 cs（contains）匹配
+      if (cat.platform) query = query.contains('platforms', [cat.platform]);
+      // topic 过滤：topics 是数组，用 cs 匹配
+      if (cat.topic) query = query.contains('topics', [cat.topic]);
+
+      const { data, error: dbError } = await query;
+      if (dbError) throw new Error(dbError.message);
+
+      const items: AppItem[] = (data || []).map((r: any): AppItem => ({
+        id: r.id, full_name: r.full_name, name: r.name,
+        description: r.description, owner: r.owner, repo: r.repo,
+        avatar_url: r.avatar_url || '', stars: r.stars || 0,
+        forks: r.forks || 0, language: r.language, topics: r.topics || [],
+        platforms: r.platforms || [], latest_version: r.latest_version,
+        latest_release_date: r.latest_release_date,
+        html_url: r.html_url || `https://github.com/${r.owner}/${r.repo}`,
+        updated_at: r.updated_at || '', license: r.license,
+        archived: r.archived || false, open_issues_count: r.open_issues_count || 0,
+        total_downloads: r.total_downloads || 0, has_installable_assets: true,
+      }));
+
       if (pageNum === 1) setApps(items);
       else setApps((prev) => [...prev, ...items]);
-      setHasMore(items.length >= 20);
-      // 后台静默补充版本/下载量信息，不影响已显示的列表
-      enrichAppsInBackground(items, (enriched) => {
-        if (pageNum === 1) setApps(enriched);
-        else setApps((prev) => [...prev.slice(0, prev.length - items.length), ...enriched]);
-      });
+      setHasMore(items.length >= PAGE_SIZE);
     } catch (e: any) {
       setError(e?.message || '加载失败');
     } finally {
