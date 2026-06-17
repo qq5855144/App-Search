@@ -3,6 +3,12 @@ import { getCache, setCache, HOUR, DAY, searchCacheKey } from '@/lib/cache'
 
 let cachedToken: string | null = null
 
+/**
+ * 会话级安装包状态缓存：key = "owner/repo", value = true(有)/false(无)/undefined(未知)
+ * 避免同一 repo 在同一会话内重复调用 check_installable_batch
+ */
+const _installableCache = new Map<string, boolean>()
+
 // 直接读取环境变量，避免依赖 supabase-js 客户端层
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || ''
 const SUPABASE_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || ''
@@ -119,15 +125,21 @@ async function _fetchAndFilter(
   const raw = await _fetchSearchRepos(q, sort, order, page, perPage)
   if (!installableOnly) return { ...raw, filtered: false }
 
-  const enriched = await enrichApps(raw.items)
+  const { items: enriched, timedOut } = await enrichApps(raw.items)
   const installable = enriched.filter((a) => a.has_installable_assets)
 
   if (installable.length > 0) {
-    // 有安装包的应用，过滤成功
     return { items: installable, total_count: raw.total_count, filtered: true }
   }
-  // enrichApps 超时或 Edge Function 失败：兜底返回原始列表，标记未过滤（不会被缓存）
-  return { items: raw.items, total_count: raw.total_count, filtered: false }
+
+  // 区分两种 installable.length===0 的情况：
+  // 1. 超时/失败（timedOut=true）→ 兜底展示原始列表（不入缓存）
+  // 2. API 响应了但全部 ok=false（可能限速）→ 也走兜底，但不缓存，下次重试
+  if (timedOut) {
+    return { items: raw.items, total_count: raw.total_count, filtered: false }
+  }
+  // API 有响应但无安装包：说明这批结果确实没有安装包，返回空（不展示脏数据）
+  return { items: [], total_count: raw.total_count, filtered: true }
 }
 
 async function _fetchSearchRepos(
@@ -147,16 +159,30 @@ async function _fetchSearchRepos(
 
 /**
  * 批量查询安装包信息，返回 enriched 结果（可直接 await）
- * - 失败或超时时返回原始 items（兜底不报错）
- * - timeoutMs 默认 12000ms
+ * - 命中会话缓存的 repo 直接跳过，只请求未知的
+ * - 失败或超时时返回原始 items（兜底不报错），同时通过 timedOut 标记告知调用方
+ * - timeoutMs 默认 8000ms
  */
 export async function enrichApps(
   items: AppItem[],
-  timeoutMs = 12000,
-): Promise<AppItem[]> {
-  if (items.length === 0) return items
+  timeoutMs = 8000,
+): Promise<{ items: AppItem[]; timedOut: boolean }> {
+  if (items.length === 0) return { items, timedOut: false }
+
+  // 1. 已缓存的直接处理，只对未知的发请求
+  const unknown = items.filter((a) => !_installableCache.has(`${a.owner}/${a.repo}`))
+  const fromCache = items.map((a): AppItem => {
+    const cached = _installableCache.get(`${a.owner}/${a.repo}`)
+    if (cached === true) return { ...a, has_installable_assets: true }
+    return a
+  })
+
+  if (unknown.length === 0) {
+    return { items: fromCache, timedOut: false }
+  }
+
   try {
-    const repos = items.map((a) => ({ owner: a.owner, repo: a.repo }))
+    const repos = unknown.map((a) => ({ owner: a.owner, repo: a.repo }))
     const fetchPromise = callEdgeFunction({
       action: 'check_installable_batch',
       params: { repos },
@@ -166,42 +192,64 @@ export async function enrichApps(
       setTimeout(() => resolve(null), timeoutMs)
     )
     const data = await Promise.race([fetchPromise, timeoutPromise])
-    if (!Array.isArray(data?.data)) return items
+
+    // 超时：返回已缓存处理的结果，标记 timedOut=true
+    if (!Array.isArray(data?.data)) return { items: fromCache, timedOut: true }
+
+    // 写入会话缓存
+    for (const r of data.data) {
+      if (r?.key) _installableCache.set(r.key, r.ok === true)
+    }
 
     const resultMap = new Map<string, any>()
     for (const r of data.data) {
       if (r?.key) resultMap.set(r.key, r)
     }
 
-    return items.map((app): AppItem => {
-      const r = resultMap.get(`${app.owner}/${app.repo}`)
-      if (!r?.ok) return app
-      return {
-        ...app,
-        has_installable_assets: true,
-        latest_version: r.latest_version ?? app.latest_version,
-        latest_release_date: r.latest_release_date ?? app.latest_release_date,
-        total_downloads: r.total_downloads ?? 0,
-        platforms: [...new Set([...app.platforms, ...(r.platforms || [])])],
-      }
-    })
+    return {
+      timedOut: false,
+      items: fromCache.map((app): AppItem => {
+        // 已从缓存处理过（has_installable_assets=true）则保留
+        if (app.has_installable_assets) return app
+        const r = resultMap.get(`${app.owner}/${app.repo}`)
+        if (!r?.ok) return app
+        return {
+          ...app,
+          has_installable_assets: true,
+          latest_version: r.latest_version ?? app.latest_version,
+          latest_release_date: r.latest_release_date ?? app.latest_release_date,
+          total_downloads: r.total_downloads ?? 0,
+          platforms: [...new Set([...app.platforms, ...(r.platforms || [])])],
+        }
+      }),
+    }
   } catch {
-    return items
+    return { items: fromCache, timedOut: true }
   }
 }
 
 /**
  * 通用安装包过滤：适用于任何含 owner/repo 的列表（AppItem、RankItem 等）
- * - 调用 check_installable_batch，只返回确认有安装包的条目
- * - 超时（12s）或 Edge Function 失败时兜底返回原列表（避免空列表）
+ * - 优先使用会话级 _installableCache，命中缓存的 repo 无需网络请求
+ * - 超时（8s）或 Edge Function 失败时兜底返回原列表（避免空列表）
  */
 export async function filterInstallable<T extends { owner: string; repo: string }>(
   items: T[],
-  timeoutMs = 12000,
+  timeoutMs = 8000,
 ): Promise<T[]> {
   if (items.length === 0) return items
+
+  // 1. 先用缓存处理已知结果
+  const unknown = items.filter((a) => !_installableCache.has(`${a.owner}/${a.repo}`))
+  const cachedInstallable = items.filter((a) => _installableCache.get(`${a.owner}/${a.repo}`) === true)
+
+  if (unknown.length === 0) {
+    // 全部命中缓存：直接过滤
+    return cachedInstallable.length > 0 ? cachedInstallable : items
+  }
+
   try {
-    const repos = items.map((a) => ({ owner: a.owner, repo: a.repo }))
+    const repos = unknown.map((a) => ({ owner: a.owner, repo: a.repo }))
     const fetchPromise = callEdgeFunction({
       action: 'check_installable_batch',
       params: { repos },
@@ -211,15 +259,26 @@ export async function filterInstallable<T extends { owner: string; repo: string 
       setTimeout(() => resolve(null), timeoutMs)
     )
     const data = await Promise.race([fetchPromise, timeoutPromise])
-    if (!Array.isArray(data?.data)) return items   // 超时兜底
+
+    // 超时兜底：返回已知可安装 + 未知的（保守展示）
+    if (!Array.isArray(data?.data)) {
+      const knownGood = items.filter((a) => _installableCache.get(`${a.owner}/${a.repo}`) !== false)
+      return knownGood.length > 0 ? knownGood : items
+    }
+
+    // 写入会话缓存
+    for (const r of data.data) {
+      if (r?.key) _installableCache.set(r.key, r.ok === true)
+    }
 
     const installableKeys = new Set<string>()
     for (const r of data.data) {
       if (r?.ok && r?.key) installableKeys.add(r.key)
     }
-
-    const filtered = items.filter((a) => installableKeys.has(`${a.owner}/${a.repo}`))
-    // 若 Edge Function 返回空集（如所有 repo 都未找到发行包），兜底展示原列表
+    // 合并：缓存命中的 + 本次 API 确认的
+    const filtered = items.filter(
+      (a) => _installableCache.get(`${a.owner}/${a.repo}`) === true
+    )
     return filtered.length > 0 ? filtered : items
   } catch {
     return items
@@ -233,7 +292,7 @@ export async function enrichAppsInBackground(
   items: AppItem[],
   onUpdate: (enriched: AppItem[]) => void
 ): Promise<void> {
-  const enriched = await enrichApps(items)
+  const { items: enriched } = await enrichApps(items)
   if (enriched !== items) onUpdate(enriched)
 }
 
