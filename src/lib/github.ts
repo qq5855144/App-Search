@@ -132,14 +132,9 @@ async function _fetchAndFilter(
     return { items: installable, total_count: raw.total_count, filtered: true }
   }
 
-  // 区分两种 installable.length===0 的情况：
-  // 1. 超时/失败（timedOut=true）→ 兜底展示原始列表（不入缓存）
-  // 2. API 响应了但全部 ok=false（可能限速）→ 也走兜底，但不缓存，下次重试
-  if (timedOut) {
-    return { items: raw.items, total_count: raw.total_count, filtered: false }
-  }
-  // API 有响应但无安装包：说明这批结果确实没有安装包，返回空（不展示脏数据）
-  return { items: [], total_count: raw.total_count, filtered: true }
+  // installable.length===0：无论是超时还是限速全返回 ok:false，
+  // 都无法可靠区分"真没安装包"与"限速误报"，统一兜底展示原列表（不入缓存）
+  return { items: raw.items, total_count: raw.total_count, filtered: false }
 }
 
 async function _fetchSearchRepos(
