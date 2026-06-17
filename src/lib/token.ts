@@ -7,7 +7,11 @@ const TOKEN_KEY = 'github_pat'
 const storage = {
   async getItem(key: string): Promise<string | null> {
     if (Platform.OS === 'web') {
-      return localStorage.getItem(key)
+      try {
+        return typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null
+      } catch {
+        return null
+      }
     }
     // 动态导入，避免 Web 端模块加载时崩溃
     const SecureStore = await import('expo-secure-store')
@@ -15,7 +19,11 @@ const storage = {
   },
   async setItem(key: string, value: string): Promise<void> {
     if (Platform.OS === 'web') {
-      localStorage.setItem(key, value)
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem(key, value)
+      } catch {
+        // ignore storage errors
+      }
       return
     }
     const SecureStore = await import('expo-secure-store')
@@ -23,7 +31,11 @@ const storage = {
   },
   async deleteItem(key: string): Promise<void> {
     if (Platform.OS === 'web') {
-      localStorage.removeItem(key)
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.removeItem(key)
+      } catch {
+        // ignore storage errors
+      }
       return
     }
     const SecureStore = await import('expo-secure-store')
