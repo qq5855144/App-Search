@@ -138,13 +138,13 @@ serve(async (req) => {
               : { key: `${owner}/${repo}`, ok: false, from_cache: true }
           })
 
-        // ── 3. GitHub API 查询未缓存的仓库（限 30 个防限速）────────
+        // ── 3. GitHub API 查询未缓存的仓库（限 50 个防限速）────────
         const freshResults: any[] = []
         const dbUpserts: any[] = []
 
         if (toFetch.length > 0) {
           const settled = await Promise.allSettled(
-            toFetch.slice(0, 30).map(async ({ owner, repo }) => {
+            toFetch.slice(0, 50).map(async ({ owner, repo }) => {
               const key = `${owner}/${repo}`
               try {
                 const r = await fetch(
@@ -220,8 +220,8 @@ serve(async (req) => {
             }
           }
 
-          // ── 4. 超出 30 个限制的仓库补充为 ok:null（未知，不过滤）──
-          for (const { owner, repo } of toFetch.slice(30)) {
+          // ── 4. 超出 50 个限制的仓库补充为 ok:null（未知，客户端严格模式下不展示）──
+          for (const { owner, repo } of toFetch.slice(50)) {
             freshResults.push({ key: `${owner}/${repo}`, ok: null })
           }
 
