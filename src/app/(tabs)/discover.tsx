@@ -80,7 +80,8 @@ async function fetchCatalog(params: {
   let query = supabase
     .from('app_catalog')
     .select('*', { count: 'exact' })
-    .eq('archived', false);
+    .eq('archived', false)
+    .not('latest_version', 'is', null); // 只返回有安装包（有 release）的项目
 
   if (platform && platform !== '全平台') {
     query = query.contains('platforms', [platform]);
