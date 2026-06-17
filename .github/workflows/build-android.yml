@@ -65,59 +65,81 @@ jobs:
           with open(path, 'r') as f:
               content = f.read()
 
-          original = content
+          def find_block_end(text, start):
+              """从 start 处的第一个 '{' 开始，返回配对 '}' 的位置"""
+              depth = 0
+              i = start
+              while i < len(text):
+                  if text[i] == '{':
+                      depth += 1
+                  elif text[i] == '}':
+                      depth -= 1
+                      if depth == 0:
+                          return i
+                  i += 1
+              return len(text) - 1
 
-          # ── 1. 强制替换 ndk { abiFilters ... } 块（不管已有什么内容）──────────
-          # 匹配 ndk { ... } 整块（单行或多行）并替换为只保留 arm64-v8a
-          content = re.sub(
-              r'ndk\s*\{[^}]*\}',
-              'ndk { abiFilters "arm64-v8a" }',
-              content
-          )
-          # 若原文件没有 ndk 块，则在 defaultConfig { 后插入
-          if 'ndk {' not in content:
+          # ── 1. ndk { abiFilters } ────────────────────────────────────────────
+          m = re.search(r'ndk\s*\{', content)
+          if m:
+              end = find_block_end(content, m.start())
+              content = content[:m.start()] + 'ndk { abiFilters "arm64-v8a" }' + content[end + 1:]
+          else:
               content = content.replace(
                   'defaultConfig {',
                   'defaultConfig {\n        ndk { abiFilters "arm64-v8a" }',
                   1
               )
 
-          # ── 2. 强制替换 / 插入 splits 块（最可靠的 ABI 分割方式）────────────
-          splits_block = '''    splits {
-              abi {
-                  enable true
-                  reset()
-                  include "arm64-v8a"
-                  universalApk false
-              }
-          }'''
-          if re.search(r'splits\s*\{', content):
-              content = re.sub(r'splits\s*\{.*?\}(\s*\})', splits_block + r'\1', content, flags=re.DOTALL)
+          # ── 2. splits { abi { ... } } ────────────────────────────────────────
+          splits_block = (
+              '    splits {\n'
+              '        abi {\n'
+              '            enable true\n'
+              '            reset()\n'
+              '            include "arm64-v8a"\n'
+              '            universalApk false\n'
+              '        }\n'
+              '    }'
+          )
+          m = re.search(r'splits\s*\{', content)
+          if m:
+              end = find_block_end(content, m.start())
+              content = content[:m.start()] + splits_block.strip() + content[end + 1:]
           else:
-              # 插入到 android { 块末尾（最后一个 } 之前）
-              content = re.sub(r'(android\s*\{)', r'\1\n' + splits_block, content, count=1)
+              m_android = re.search(r'android\s*\{', content)
+              if m_android:
+                  end = find_block_end(content, m_android.start())
+                  content = content[:end] + '\n' + splits_block + '\n' + content[end:]
 
-          # ── 3. 强制替换 / 插入 packagingOptions（删除非 arm64 .so）───────────
-          packaging_block = '''    packagingOptions {
-              jniLibs { useLegacyPackaging = true }
-              excludes += [
-                  "lib/armeabi-v7a/**",
-                  "lib/x86/**",
-                  "lib/x86_64/**"
-              ]
-          }'''
-          if re.search(r'packagingOptions\s*\{', content):
-              content = re.sub(r'packagingOptions\s*\{.*?\}', packaging_block, content, flags=re.DOTALL)
+          # ── 3. packagingOptions { ... }（大括号计数，避免嵌套块误截断）─────────
+          packaging_block = (
+              '    packagingOptions {\n'
+              '        jniLibs { useLegacyPackaging = true }\n'
+              '        excludes += [\n'
+              '            "lib/armeabi-v7a/**",\n'
+              '            "lib/x86/**",\n'
+              '            "lib/x86_64/**"\n'
+              '        ]\n'
+              '    }'
+          )
+          m = re.search(r'packagingOptions\s*\{', content)
+          if m:
+              end = find_block_end(content, m.start())
+              content = content[:m.start()] + packaging_block.strip() + content[end + 1:]
           else:
-              content = re.sub(r'(android\s*\{)', r'\1\n' + packaging_block, content, count=1)
+              m_android = re.search(r'android\s*\{', content)
+              if m_android:
+                  end = find_block_end(content, m_android.start())
+                  content = content[:end] + '\n' + packaging_block + '\n' + content[end:]
 
           with open(path, 'w') as f:
               f.write(content)
 
-          # 验证输出
+          # 验证
           print("=== ABI filter verification ===")
           for i, line in enumerate(content.split('\n'), 1):
-              if any(kw in line for kw in ['abiFilter', 'ndk {', 'splits', 'include "arm64', 'universalApk', 'exclude', 'packagingOptions']):
+              if any(k in line for k in ['abiFilter', 'ndk {', 'splits', 'include "arm64', 'universalApk', 'packagingOptions', 'jniLibs', 'excludes']):
                   print(f"  L{i}: {line.strip()}")
           print("=== Done ===")
           PYEOF
