@@ -10,6 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/client/supabase';
 import { uploadPendingEvents } from '@/lib/events';
+import { filterInstallable } from '@/lib/github';
 import AppIcon from '@/components/openappstore/AppIcon';
 
 type RankType = 'hot' | 'download' | 'favorite';
@@ -63,9 +64,10 @@ export default function RankingScreen() {
         .order('rank_position', { ascending: true })
         .limit(50);
       if (error) throw error;
-      // 过滤掉 app_id=0 或名称/owner 均为空的无效记录
+      // 过滤掉 app_id=0 或名称/owner 均为空的无效记录，再过滤无安装包的应用
       const valid = Array.isArray(data) ? data.filter((r: any) => r.app_id > 0 || r.app_name || r.owner) : [];
-      setItems(valid);
+      const installable = await filterInstallable(valid);
+      setItems(installable);
       if (data && data.length > 0) {
         const ts = new Date((data[0] as any).updated_at);
         setLastUpdated(`更新于 ${ts.toLocaleDateString('zh-CN')} ${ts.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`);
