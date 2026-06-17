@@ -38,6 +38,7 @@ const SORT_OPTIONS: { key: string; label: string; icon: string }[] = [
 export default function DiscoverTab() {
   const [apps, setApps] = useState<AppItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [platform, setPlatform] = useState<string>('全平台');
   const [category, setCategory] = useState<string>('全部');
@@ -58,6 +59,7 @@ export default function DiscoverTab() {
     setError('');
     if (isRefresh) setRefreshing(true);
     else if (pageNum === 1) setLoading(true);
+    else setLoadingMore(true);
 
     try {
       const topic = CATEGORIES.find((c) => c.key === cat)?.topic ?? '';
@@ -77,6 +79,7 @@ export default function DiscoverTab() {
       setError(e?.message || '加载失败，请检查网络后重试');
     } finally {
       setLoading(false);
+      setLoadingMore(false);
       setRefreshing(false);
       loadingRef.current = false;
     }
@@ -217,8 +220,13 @@ export default function DiscoverTab() {
               </View>
         }
         ListFooterComponent={
-          !loading || apps.length === 0 ? null
-            : <View style={{ paddingVertical: 16 }}><ActivityIndicator color="#1677FF" /></View>
+          loadingMore
+            ? <View style={{ paddingVertical: 16 }}><ActivityIndicator color="#1677FF" /></View>
+            : hasMore
+              ? <View style={{ paddingVertical: 12, alignItems: 'center' }}><Text style={{ color: '#CCC', fontSize: 12 }}>上滑加载更多</Text></View>
+              : apps.length > 0
+                ? <View style={{ paddingVertical: 16, alignItems: 'center' }}><Text style={{ color: '#CCC', fontSize: 12 }}>— 已显示全部 —</Text></View>
+                : null
         }
       />
     </SafeAreaView>
