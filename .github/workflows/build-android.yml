@@ -56,7 +56,7 @@ jobs:
         env:
           CI: true
 
-      - name: Force arm64-v8a only (strip all other ABIs)
+      - name: Force arm64-v8a only (ndk abiFilters only, no splits conflict)
         run: |
           python3 << 'PYEOF'
           import re
@@ -66,7 +66,6 @@ jobs:
               content = f.read()
 
           def find_block_end(text, start):
-              """从 start 处的第一个 '{' 开始，返回配对 '}' 的位置"""
               depth = 0
               i = start
               while i < len(text):
@@ -79,7 +78,8 @@ jobs:
                   i += 1
               return len(text) - 1
 
-          # ── 1. ndk { abiFilters } ────────────────────────────────────────────
+          # ── 1. ndk { abiFilters "arm64-v8a" } ────────────────────────────────
+          # NOTE: Do NOT add splits{} alongside ndk abiFilters — they conflict in RN gradle plugin
           m = re.search(r'ndk\s*\{', content)
           if m:
               end = find_block_end(content, m.start())
@@ -91,47 +91,11 @@ jobs:
                   1
               )
 
-          # ── 2. splits { abi { ... } } ────────────────────────────────────────
-          splits_block = (
-              '    splits {\n'
-              '        abi {\n'
-              '            enable true\n'
-              '            reset()\n'
-              '            include "arm64-v8a"\n'
-              '            universalApk false\n'
-              '        }\n'
-              '    }'
-          )
-          m = re.search(r'splits\s*\{', content)
+          # ── 2. Remove any existing splits{} block to avoid conflict ───────────
+          m = re.search(r'\s*splits\s*\{', content)
           if m:
               end = find_block_end(content, m.start())
-              content = content[:m.start()] + splits_block.strip() + content[end + 1:]
-          else:
-              m_android = re.search(r'android\s*\{', content)
-              if m_android:
-                  end = find_block_end(content, m_android.start())
-                  content = content[:end] + '\n' + splits_block + '\n' + content[end:]
-
-          # ── 3. packagingOptions { ... }（大括号计数，避免嵌套块误截断）─────────
-          packaging_block = (
-              '    packagingOptions {\n'
-              '        jniLibs { useLegacyPackaging = true }\n'
-              '        excludes += [\n'
-              '            "lib/armeabi-v7a/**",\n'
-              '            "lib/x86/**",\n'
-              '            "lib/x86_64/**"\n'
-              '        ]\n'
-              '    }'
-          )
-          m = re.search(r'packagingOptions\s*\{', content)
-          if m:
-              end = find_block_end(content, m.start())
-              content = content[:m.start()] + packaging_block.strip() + content[end + 1:]
-          else:
-              m_android = re.search(r'android\s*\{', content)
-              if m_android:
-                  end = find_block_end(content, m_android.start())
-                  content = content[:end] + '\n' + packaging_block + '\n' + content[end:]
+              content = content[:m.start()] + content[end + 1:]
 
           with open(path, 'w') as f:
               f.write(content)
@@ -139,7 +103,7 @@ jobs:
           # 验证
           print("=== ABI filter verification ===")
           for i, line in enumerate(content.split('\n'), 1):
-              if any(k in line for k in ['abiFilter', 'ndk {', 'splits', 'include "arm64', 'universalApk', 'packagingOptions', 'jniLibs', 'excludes']):
+              if any(k in line for k in ['abiFilter', 'ndk {', 'splits', 'include "arm64']):
                   print(f"  L{i}: {line.strip()}")
           print("=== Done ===")
           PYEOF
