@@ -53,7 +53,7 @@ function buildQuery(platform: string, category: string): string {
 
 export default function DiscoverTab() {
   const [apps, setApps] = useState<AppItem[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);  // 初始为 true，避免首帧闪现"暂无数据"
   const [refreshing, setRefreshing] = useState(false);
   const [platform, setPlatform] = useState<string>('全平台');
   const [category, setCategory] = useState<string>('全部');
@@ -184,7 +184,7 @@ export default function DiscoverTab() {
           </View>
         }
         ListEmptyComponent={
-          loading
+          (loading || !hasFetchedRef.current)
             ? <View style={{ padding: 16 }}>{[1,2,3,4].map((i) => <SkeletonCard key={i} />)}</View>
             : <View style={{ alignItems: 'center', paddingTop: 60, paddingHorizontal: 32 }}>
                 <View style={{
