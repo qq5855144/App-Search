@@ -79,12 +79,11 @@ export default function DiscoverTab() {
   const [platform, setPlatform] = useState<string>('全平台');
   const [category, setCategory] = useState<string>('全部');
   const [sort, setSort] = useState<string>('stars');
-  const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(true);
+  const [hasMore, setHasMore] = useState(false); // 初始 false，首次加载成功后才置 true
   const [error, setError] = useState<string>('');
   const loadingRef = useRef(false);
-  // 用 ref 标记是否已发起过首次请求，避免 apps 被过滤清空后触发无限循环
-  const hasFetchedRef = useRef(false);
+  const pageRef = useRef(1);          // 用 ref 追踪页码，避免 stale closure
+  const hasFetchedRef = useRef(false); // 首次请求发出后才允许 onEndReached 分页
 
   const loadData = useCallback(async (
     pageNum = 1, isRefresh = false,
@@ -98,8 +97,10 @@ export default function DiscoverTab() {
       if (isRefresh) setRefreshing(true);
       else if (pageNum === 1) setLoading(true);
       const topic = CATEGORIES.find((c) => c.key === cat)?.topic ?? '';
-      const { items } = await fetchCatalog({ platform: p, topic, sort: s, page: pageNum, per_page: 20 });      if (pageNum === 1) setApps(items);
+      const { items } = await fetchCatalog({ platform: p, topic, sort: s, page: pageNum, per_page: 20 });
+      if (pageNum === 1) setApps(items);
       else setApps((prev) => [...prev, ...items]);
+      pageRef.current = pageNum;
       setHasMore(items.length >= 20);
     } catch (e: any) {
       console.warn('[Discover] Load failed:', e);
@@ -113,9 +114,10 @@ export default function DiscoverTab() {
 
   const handleClearCacheAndReload = async () => {
     await clearAllCache();
-    hasFetchedRef.current = false; // 允许下次 focus 重新加载
-    setPage(1);
+    hasFetchedRef.current = false;
+    pageRef.current = 1;
     setApps([]);
+    setHasMore(false);
     loadData(1, false);
   };
 
@@ -127,7 +129,9 @@ export default function DiscoverTab() {
 
   const reset = (p: string, cat: string, s: string) => {
     setPlatform(p); setCategory(cat); setSort(s);
-    setPage(1); setApps([]);
+    pageRef.current = 1;
+    setApps([]);
+    setHasMore(false);
     loadData(1, false, p, cat, s);
   };
 
@@ -137,10 +141,14 @@ export default function DiscoverTab() {
         data={apps}
         keyExtractor={(item) => String(item.id)}
         renderItem={({ item }) => <AppCard app={item} />}
-        onRefresh={() => { setPage(1); loadData(1, true); }}
+        onRefresh={() => { pageRef.current = 1; loadData(1, true); }}
         refreshing={refreshing}
         onEndReached={() => {
-          if (!loadingRef.current && hasMore) { const n = page + 1; setPage(n); loadData(n); }
+          // hasFetchedRef 守卫：避免初始空列表立即触发、抢在 page1 前加载 page2
+          if (hasFetchedRef.current && !loadingRef.current && hasMore) {
+            const n = pageRef.current + 1;
+            loadData(n);
+          }
         }}
         onEndReachedThreshold={0.5}
         contentContainerStyle={{ paddingBottom: 24 }}
