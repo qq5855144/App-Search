@@ -279,11 +279,28 @@ export async function filterInstallable<T extends { owner: string; repo: string 
       )
     )
 
-    // 严格过滤：只保留缓存或 API 确认有发行版的项目
-    return items.filter((_, i) =>
-      statusList[i] === true ||
-      data.data.find((r: any) => r?.key === `${items[i].owner}/${items[i].repo}`)?.ok === true
-    )
+    // 严格过滤规则：
+    // - ok:true  → 确认有安装包，保留
+    // - ok:false → 确认无安装包，剔除
+    // - ok:null / 无结果（未检查/网络错误/超出批量限制）→ 未知，保留（不误杀）
+    const resultMap = new Map<string, boolean | null>()
+    for (const r of data.data) {
+      if (r?.key) resultMap.set(r.key, r.ok === true ? true : r.ok === false ? false : null)
+    }
+
+    return items.filter((_, i) => {
+      const key = `${items[i].owner}/${items[i].repo}`
+      if (statusList[i] === true) return true          // L1/L2 缓存确认有
+      if (statusList[i] === false) {
+        // 缓存说无 → 以 API 最新结果为准（可能新增了发行版）
+        const apiResult = resultMap.get(key)
+        return apiResult === true                       // API 说有才保留
+      }
+      // statusList === null（未知）→ 看 API 结果
+      if (!resultMap.has(key)) return true             // 未被检查（超出限制/未发请求）→ 保留
+      const apiResult = resultMap.get(key)
+      return apiResult !== false                       // null（网络错误）或 true → 保留；false → 剔除
+    })
   } catch {
     // 异常时保守处理：剔除已知无发行版，保留其余
     return items.filter((_, i) => statusList[i] !== false)
