@@ -5,11 +5,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { addSearchHistory, clearSearchHistory, getSearchHistory } from '@/lib/database';
 import { addAppEvent } from '@/lib/events';
-import { searchLocalCatalog } from '@/lib/catalog';
+import { supabase } from '@/client/supabase';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
 
-// 前端兜底过滤词列表（防止数据库未覆盖的边缘词）
+// 前端兜底过滤词列表
 const BLOCKED_PATTERNS = [
   /色情|裸体|黄片|成人片|约炮|嫖娼/i,
   /\b(porn|nude|xxx|sex(?:ual)?|av\b)/i,
@@ -60,16 +60,21 @@ export default function SearchTab() {
     try { addSearchHistory(k).then(loadHistory); } catch { /* ignore */ }
     addAppEvent({ event_type: 'search', keyword: k }).catch(() => {});
 
-    // 先同步更新 UI 状态，确保 loading spinner 先显示
     setSearched(true);
     setLoading(true);
     setError('');
     setResults([]);
 
     try {
-      // 完全本地搜索，零网络依赖——彻底规避 CORS/RPC/PostgREST 所有问题
-      const items = searchLocalCatalog(k);
-      setResults(items);
+      // 通过 Edge Function 查询，服务端返回，彻底规避浏览器 CORS 限制
+      const { data, error: fnErr } = await supabase.functions.invoke('search-catalog', {
+        body: { q: k, per_page: 50 },
+      });
+      if (fnErr) {
+        const msg = await fnErr?.context?.text?.().catch(() => '');
+        throw new Error(msg || fnErr.message || '搜索失败');
+      }
+      setResults(Array.isArray(data?.data) ? data.data : []);
     } catch (e: any) {
       setError(e?.message || e?.toString() || '搜索失败，请重试');
     } finally {
@@ -172,7 +177,7 @@ export default function SearchTab() {
           ListHeaderComponent={
             <View style={{ paddingHorizontal: 16, paddingVertical: 8 }}>
               <Text style={{ fontSize: 13, color: '#888' }}>
-                共找到 {results.length} 个应用
+                找到 {results.length} 个应用
               </Text>
             </View>
           }
