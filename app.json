@@ -2,15 +2,13 @@
   "expo": {
     "name": "开源应用商店",
     "slug": "open-app-store",
-    "version": "1.0.228",
+    "version": "1.0.231",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "openappstore",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "cover",
       "backgroundColor": "#FCFDFC"
     },
     "ios": {
@@ -47,8 +45,12 @@
       "expo-image",
       "expo-file-system",
       "expo-sharing",
-      "expo-splash-screen",
-      "./plugins/withAndroidSplashFix",
+      ["expo-splash-screen", {
+        "backgroundColor": "#FCFDFC",
+        "image": "./assets/icon.png",
+        "imageWidth": 200,
+        "resizeMode": "contain"
+      }],
       "expo-notifications",
       "@react-native-async-storage/expo-with-async-storage",
       "./plugins/withAndroidABIFilter"
