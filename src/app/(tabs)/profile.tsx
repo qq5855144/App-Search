@@ -12,11 +12,14 @@ import {
 import { fetchRateLimit } from '@/lib/github';
 import { clearAllCache } from '@/lib/cache';
 import { getEventCounts } from '@/lib/events';
+import { useDownload } from '@/ctx/DownloadContext';
+import { getAllTasks } from '@/lib/downloadManager';
 
 type ConfirmTarget = 'downloads' | 'token' | 'cache' | null;
 
 export default function ProfileTab() {
   const router = useRouter();
+  const { activeCount } = useDownload();
 
   const [token, setTokenState] = useState('');
   const [tokenExpanded, setTokenExpanded] = useState(false);
@@ -42,8 +45,10 @@ export default function ProfileTab() {
       ]);
       if (t) { setTokenState(t); setSaved(true); }
       setFavCount(stats.total);
-      // Use real event counts when available, fall back to local history lengths
-      setDlCount(evCounts.download > 0 ? evCounts.download : dl.length);
+      // Use real event counts + active downloads for total
+      const activeTasks = getAllTasks();
+      const activeDlCount = activeTasks.filter((t) => t.status === 'downloading' || t.status === 'pending').length;
+      setDlCount(evCounts.download > 0 ? evCounts.download + activeDlCount : dl.length + activeDlCount);
       fetchRateLimit().then(setRateLimit).catch(() => {});
       // Estimate cache size from localStorage keys
       try {
@@ -182,7 +187,7 @@ export default function ProfileTab() {
           <Row icon="heart-outline" iconColor="#FF4D88" label="我的收藏" value={`${favCount} 个`}
             onPress={() => router.push('/favorites' as any)} />
           <Divider />
-          <Row icon="download-outline" iconColor="#1677FF" label="下载记录" value={`${dlCount} 条`}
+          <Row icon="download-outline" iconColor="#1677FF" label="下载管理" value={`${dlCount} 条${activeCount > 0 ? ` · ${activeCount} 进行中` : ''}`}
             onPress={() => router.push('/downloads' as any)} />
           {dlCount > 0 && (
             <>

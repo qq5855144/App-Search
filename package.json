@@ -24,6 +24,7 @@
     "expo-haptics": "~55.0.14",
     "expo-image": "catalog:",
     "expo-linking": "~55.0.7",
+    "expo-notifications": "55.0.11-canary-20260429-a5e59cf",
     "expo-router": "55.0.5",
     "expo-secure-store": "~55.0.14",
     "expo-sharing": "~55.0.20",
