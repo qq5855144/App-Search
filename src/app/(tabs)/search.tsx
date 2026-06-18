@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { addSearchHistory, clearSearchHistory, getSearchHistory } from '@/lib/database';
 import { addAppEvent, uploadPendingEventsToTrack } from '@/lib/events';
-import { fetchSearchReposRaw, filterInstallable } from '@/lib/github';
+import { smartSearch } from '@/lib/github';
 import { supabase } from '@/client/supabase';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
@@ -67,8 +67,7 @@ export default function SearchTab() {
   }, [loadHistory, loadHotWords]));
 
   /**
-   * 动态流式搜索：分批过滤，每批有安装包的项目立即追加显示
-   * 严格禁止展示无安装包项目（无任何兜底）
+   * 服务端一站式搜索：单次请求，服务端完成 catalog + GitHub + 安装包过滤
    */
   const performSearch = async (kw: string, pageNum = 1, isLoadMore = false) => {
     const k = kw.trim();
@@ -85,7 +84,6 @@ export default function SearchTab() {
 
     inputRef.current?.blur();
 
-    // 竞态防护：每次新搜索生成新 id
     const thisSearchId = ++searchIdRef.current;
 
     if (!isLoadMore) {
@@ -106,54 +104,22 @@ export default function SearchTab() {
     }
 
     try {
-      // 拉取原始数据
-      const raw = await fetchSearchReposRaw(k, {
-        sort: 'stars', order: 'desc', page: pageNum, per_page: 50,
+      const { items, total_count, has_more } = await smartSearch(k, {
+        sort: 'stars', order: 'desc', page: pageNum, per_page: 30,
       });
       if (searchIdRef.current !== thisSearchId) return;
 
-      setTotalCount(raw.total_count);
-      setHasMore(raw.total_count > pageNum * 50);
+      setTotalCount(total_count);
+      setHasMore(has_more);
       setPage(pageNum);
 
-      if (raw.items.length === 0) {
-        if (!isLoadMore) setLoading(false);
-        else setLoadingMore(false);
-        loadingRef.current = false;
-        loadHotWords();
-        return;
-      }
-
-      // 分批动态过滤：每批 10 个，过滤完立即追加有安装包的项目
-      const BATCH = 10;
-      const existingIds = new Set<number>();
-
-      // 收集已有 id（加载更多时避免重复）
       if (isLoadMore) {
-        // 通过 ref 或直接读取 state（闭包里 results 已过期，用追加时去重处理）
-      }
-
-      let firstBatch = true;
-      for (let i = 0; i < raw.items.length; i += BATCH) {
-        if (searchIdRef.current !== thisSearchId) return;
-        const batch = raw.items.slice(i, i + BATCH);
-        // 每批独立过滤（严格：只保留 ok:true）
-        const filtered = await filterInstallable(batch, 8000);
-        if (searchIdRef.current !== thisSearchId) return;
-
-        if (filtered.length > 0) {
-          setResults((prev) => {
-            const ids = new Set(prev.map((a) => a.id));
-            const newItems = filtered.filter((a) => !ids.has(a.id));
-            return newItems.length > 0 ? [...prev, ...newItems] : prev;
-          });
-        }
-
-        // 第一批结束后隐藏主 loading（后续批次追加不影响已有展示）
-        if (firstBatch) {
-          firstBatch = false;
-          setLoading(false);
-        }
+        setResults((prev) => {
+          const ids = new Set(prev.map((a) => a.id));
+          return [...prev, ...items.filter((a) => !ids.has(a.id))];
+        });
+      } else {
+        setResults(items);
       }
 
       loadHotWords();
