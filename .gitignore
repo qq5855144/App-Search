@@ -54,3 +54,4 @@ history/*.json
 /.skills
 /tasks
 package.json.[0-9]*
+.pnpm-store/

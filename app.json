@@ -48,7 +48,8 @@
       "expo-file-system",
       "expo-sharing",
       "expo-splash-screen",
-      "@react-native-async-storage/expo-with-async-storage"
+      "@react-native-async-storage/expo-with-async-storage",
+      "./plugins/withAndroidABIFilter"
     ],
     "router": {
       "root": "src"

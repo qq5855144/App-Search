@@ -3,7 +3,7 @@ import { View, Text, Pressable, FlatList } from 'react-native';
 import { useCallback, useState } from 'react';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, Clock, X } from 'lucide-react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { getSearchHistory, clearSearchHistory } from '@/lib/database';
 import EmptyState from '@/components/openappstore/EmptyState';
 
@@ -36,12 +36,12 @@ export default function SearchHistoryScreen() {
       {/* 头部 */}
       <View className="flex-row items-center px-4 py-2">
         <Pressable onPress={() => router.back()} className="p-2">
-          <ArrowLeft size={24} color="#1A1A1A" />
+          <Ionicons name="arrow-back" size={24} color="#1A1A1A" />
         </Pressable>
         <Text className="flex-1 text-center text-base font-semibold text-foreground pr-10">搜索历史</Text>
         {history.length > 0 && (
           <Pressable onPress={handleClear} className="p-2">
-            <X size={20} color="#FF4D4F" />
+            <Ionicons name="close" size={20} color="#FF4D4F" />
           </Pressable>
         )}
       </View>
@@ -55,7 +55,7 @@ export default function SearchHistoryScreen() {
             className="mx-4 px-4 py-3 rounded-xl bg-card mb-2 flex-row items-center"
             style={{ boxShadow: [{ offsetX: 0, offsetY: 1, blurRadius: 3, color: 'rgba(0,0,0,0.08)' }] }}
           >
-            <Clock size={16} color="#999999" />
+            <Ionicons name="time-outline" size={16} color="#999999" />
             <Text className="flex-1 text-sm text-foreground ml-3">{item}</Text>
           </Pressable>
         )}
