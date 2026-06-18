@@ -282,8 +282,8 @@ export async function filterInstallable<T extends { owner: string; repo: string 
     ])
 
     if (!Array.isArray(data?.data)) {
-      // 超时：保留已知可安装的 + 状态未知的（避免误杀），但严格剔除已知无发行版的
-      return items.filter((_, i) => statusList[i] !== false)
+      // 超时：严格只保留已确认有安装包的，未知状态也剔除（宁可结果少，不展示无安装包项目）
+      return items.filter((_, i) => statusList[i] === true)
     }
 
     // 持久化写入（ok:true 和 ok:false 都缓存）
@@ -313,8 +313,8 @@ export async function filterInstallable<T extends { owner: string; repo: string 
       return apiResult === true                  // 严格：只保留 ok:true，null/undefined/false 均剔除
     })
   } catch {
-    // 异常时保守处理：剔除已知无发行版，保留其余
-    return items.filter((_, i) => statusList[i] !== false)
+    // 异常时严格处理：只保留已确认有安装包的
+    return items.filter((_, i) => statusList[i] === true)
   }
 }
 
