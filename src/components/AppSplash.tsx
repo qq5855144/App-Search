@@ -4,16 +4,17 @@ import {
   Text,
   StyleSheet,
   Animated,
-  Dimensions,
   Platform,
+  useWindowDimensions,
 } from 'react-native';
-import { Image } from 'expo-image';
-
-const { width, height } = Dimensions.get('window');
+import { Store } from 'lucide-react-native';
 
 const TAGLINE = '发现精彩开源应用';
 
+const isWeb = process.env.EXPO_OS === 'web';
+
 export default function AppSplash() {
+  const { width, height } = useWindowDimensions();
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.92)).current;
   const dotsAnim = useRef(new Animated.Value(0)).current;
@@ -24,13 +25,13 @@ export default function AppSplash() {
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 500,
-        useNativeDriver: true,
+        useNativeDriver: !isWeb,
       }),
       Animated.spring(scaleAnim, {
         toValue: 1,
         friction: 8,
         tension: 40,
-        useNativeDriver: true,
+        useNativeDriver: !isWeb,
       }),
     ]).start();
 
@@ -40,12 +41,12 @@ export default function AppSplash() {
         Animated.timing(dotsAnim, {
           toValue: 1,
           duration: 1200,
-          useNativeDriver: true,
+          useNativeDriver: !isWeb,
         }),
         Animated.timing(dotsAnim, {
           toValue: 0,
           duration: 1200,
-          useNativeDriver: true,
+          useNativeDriver: !isWeb,
         }),
       ]),
     );
@@ -68,8 +69,15 @@ export default function AppSplash() {
 
   return (
     <View style={styles.container}>
-      {/* 顶部装饰弧线 */}
-      <View style={styles.arcTop} />
+      {/* 顶部装饰弧线 — 尺寸依赖运行时 width/height，用内联样式 */}
+      <View style={[styles.arcTop, {
+        top: -height * 0.25,
+        left: -width * 0.3,
+        width: width * 1.6,
+        height: height * 0.55,
+        borderBottomLeftRadius: width,
+        borderBottomRightRadius: width,
+      }]} />
 
       {/* 主内容 */}
       <Animated.View
@@ -80,12 +88,7 @@ export default function AppSplash() {
       >
         {/* 图标卡片 */}
         <View style={styles.iconCard}>
-          <Image
-            source={require('@/assets/icon.png')}
-            style={styles.icon}
-            contentFit="contain"
-            transition={200}
-          />
+          <Store size={48} color="#1677FF" strokeWidth={1.5} />
         </View>
 
         {/* 应用名称 */}
@@ -116,12 +119,6 @@ const styles = StyleSheet.create({
   },
   arcTop: {
     position: 'absolute',
-    top: -height * 0.25,
-    left: -width * 0.3,
-    width: width * 1.6,
-    height: height * 0.55,
-    borderBottomLeftRadius: width,
-    borderBottomRightRadius: width,
     backgroundColor: '#FFFFFF',
   },
   content: {
@@ -150,7 +147,6 @@ const styles = StyleSheet.create({
   icon: {
     width: 54,
     height: 54,
-    tintColor: '#1677FF',
   },
   appName: {
     marginTop: 24,
