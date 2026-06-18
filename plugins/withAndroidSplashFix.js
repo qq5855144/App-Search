@@ -17,9 +17,16 @@
  *    - windowSplashScreenAnimatedIcon → @null（不显示图标，只显示背景）
  *    - 删除 icon_preferred 行为
  *    - android:windowBackground → @drawable/ic_launcher_background（全屏）
+ *
+ * 注意：pnpm 严格 hoist 模式下，config plugin 不能直接 require('@expo/config-plugins')，
+ * 必须通过 require.resolve 找到实际路径再 require，否则 Gradle createExpoConfig 任务失败。
  */
 
-const { withDangerousMod, withAndroidStyles } = require('@expo/config-plugins');
+// pnpm 严格 hoist：使用 require.resolve 从 @expo/config-plugins 自身位置加载
+const configPluginsPath = require.resolve('@expo/config-plugins', {
+  paths: [__dirname + '/..'],
+});
+const { withDangerousMod } = require(configPluginsPath);
 const path = require('path');
 const fs = require('fs');
 
