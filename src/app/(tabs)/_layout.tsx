@@ -2,22 +2,6 @@ import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Platform, Pressable } from 'react-native';
-import * as Haptics from 'expo-haptics';
-
-/** 带触感的 Tab 按钮 */
-function HapticTabButton(props: any) {
-  return (
-    <Pressable
-      {...props}
-      onPress={(e) => {
-        if (Platform.OS !== 'web') {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-        }
-        props.onPress?.(e);
-      }}
-    />
-  );
-}
 
 const TAB_HEIGHT = Platform.OS === 'ios' ? 64 : 60;
 const TAB_PADDING_BOTTOM = Platform.OS === 'ios' ? 10 : 6;
@@ -37,7 +21,6 @@ export default function TabsLayout() {
           backgroundColor: Platform.OS === 'ios' ? 'rgba(255,255,255,0.92)' : '#FFFFFF',
         },
         tabBarHideOnKeyboard: true,
-        tabBarButton: (props) => <HapticTabButton {...props} />,
         headerShown: false,
       }}
     >
