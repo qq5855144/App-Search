@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { addSearchHistory, clearSearchHistory, getSearchHistory } from '@/lib/database';
 import { addAppEvent, uploadPendingEventsToTrack } from '@/lib/events';
-import { searchRepos } from '@/lib/github';
+import { fetchSearchReposRaw, filterInstallable } from '@/lib/github';
 import { supabase } from '@/client/supabase';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
@@ -29,17 +29,18 @@ export default function SearchTab() {
   const [hotWords, setHotWords] = useState<string[]>([]);
   const [results, setResults] = useState<AppItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [filtering, setFiltering] = useState(false); // 后台过滤阶段
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
-  const [searchSource, setSearchSource] = useState<'init' | 'local' | 'remote' | 'hybrid'>('init');
   const [loadingMore, setLoadingMore] = useState(false);
+
+  // 竞态防护：每次新搜索生成新 id，过期请求的结果直接丢弃
+  const searchIdRef = useRef(0);
   const loadingRef = useRef(false);
   const lastKeywordRef = useRef('');
-  const autoRetryRef = useRef(0);   // 连续空页自动翻页计数，防无限循环
-  const MAX_AUTO_RETRY = 5;         // 最多连续跳过 5 个空页
 
   const loadHistory = useCallback(async () => {
     try { setHistory(await getSearchHistory()); } catch { /* ignore */ }
@@ -47,16 +48,13 @@ export default function SearchTab() {
 
   const loadHotWords = useCallback(async () => {
     try {
-      // 通过 SECURITY DEFINER RPC 绕过 RLS，读取全局热搜词排行
       const { data, error } = await supabase.rpc('get_hot_keywords', { limit_n: 20 });
       if (!error && Array.isArray(data) && data.length > 0) {
         const words = (data as { keyword: string; cnt: number }[])
-          .map((r) => r.keyword)
-          .filter(isSafeKeyword);
+          .map((r) => r.keyword).filter(isSafeKeyword);
         if (words.length > 0) { setHotWords(words); return; }
       }
-    } catch { /* 网络失败降级到本地 */ }
-    // 兜底：读本地 events
+    } catch { /* 网络失败降级 */ }
     try {
       const { getPopularKeywords } = await import('@/lib/events');
       const kws = await getPopularKeywords(20);
@@ -69,7 +67,11 @@ export default function SearchTab() {
     loadHotWords();
   }, [loadHistory, loadHotWords]));
 
-  /** 核心搜索：直接调用 GitHub 远程搜索（installableOnly=true） */
+  /**
+   * 两阶段搜索：
+   * 阶段1 — 立即展示原始结果（无过滤），消除等待感
+   * 阶段2 — 后台过滤，完成后静默更新列表
+   */
   const performSearch = async (kw: string, pageNum = 1, isLoadMore = false) => {
     const k = kw.trim();
     if (!k) return;
@@ -85,71 +87,86 @@ export default function SearchTab() {
 
     inputRef.current?.blur();
 
+    // 生成本次搜索 id，用于过滤过期回调
+    const thisSearchId = ++searchIdRef.current;
+
     if (!isLoadMore) {
       try { addSearchHistory(k).then(loadHistory); } catch { /* ignore */ }
       addAppEvent({ event_type: 'search', keyword: k })
-        .then(() => uploadPendingEventsToTrack())
-        .catch(() => {});
+        .then(() => uploadPendingEventsToTrack()).catch(() => {});
 
       lastKeywordRef.current = k;
-      autoRetryRef.current = 0;
       setSearched(true);
       setLoading(true);
+      setFiltering(false);
       setError('');
       setResults([]);
       setPage(1);
       setHasMore(false);
       setTotalCount(0);
-      setSearchSource('init');
     } else {
       setLoadingMore(true);
     }
 
-    // 远程搜索（installableOnly=true，per_page=50 与 Edge Function 批量上限对齐）
     try {
-      const result = await searchRepos(k, {
-        sort: 'stars',
-        order: 'desc',
-        page: pageNum,
-        per_page: 50,
-        installableOnly: true,
+      // ── 阶段1：拿原始数据，立即展示 ──────────────────────────
+      const raw = await fetchSearchReposRaw(k, {
+        sort: 'stars', order: 'desc', page: pageNum, per_page: 50,
       });
 
-      const morePages = result.total_count > pageNum * 100;
+      // 搜索 id 过期（用户已发起新搜索），丢弃结果
+      if (searchIdRef.current !== thisSearchId) return;
+
+      const morePages = raw.total_count > pageNum * 50;
 
       if (!isLoadMore) {
-        autoRetryRef.current = 0;
-        setResults(result.items);
-        setSearchSource(result.items.length > 0 ? 'remote' : 'local');
-        setTotalCount(result.total_count);
+        setResults(raw.items);
+        setTotalCount(raw.total_count);
         setHasMore(morePages);
-        setError('');
-        loadHotWords();
+        setLoading(false);
       } else {
-        if (result.items.length === 0 && morePages && autoRetryRef.current < MAX_AUTO_RETRY) {
-          // 当页全被过滤掉→静默翻到下一页，不闪烁 spinner
-          autoRetryRef.current += 1;
-          setLoadingMore(false);
-          loadingRef.current = false;
-          setPage(pageNum);
-          // 直接继续下一页，不走 finally
-          performSearch(k, pageNum + 1, true);
-          return;
-        }
-        autoRetryRef.current = 0;
-        setResults((prev) => [...prev, ...result.items]);
-        setHasMore(morePages && result.items.length > 0);
+        setResults((prev) => [...prev, ...raw.items]);
+        setHasMore(morePages);
+        setLoadingMore(false);
       }
       setPage(pageNum);
-    } catch (e: any) {
-      if (!isLoadMore) {
-        if (results.length === 0) {
-          setError('远程搜索暂不可用：' + (e?.message || '网络错误，请检查后端服务'));
-        }
+
+      // ── 阶段2：后台过滤，完成后静默精化列表 ─────────────────
+      if (raw.items.length > 0) {
+        setFiltering(true);
+        filterInstallable(raw.items, 12000).then((filtered) => {
+          // 再次检查 id，防止过期
+          if (searchIdRef.current !== thisSearchId) return;
+          setFiltering(false);
+          // 过滤结果为空则保留原始列表（兜底，避免误杀）
+          if (filtered.length === 0) return;
+          if (!isLoadMore) {
+            setResults(filtered);
+          } else {
+            // 加载更多时，只精化本次新增部分
+            setResults((prev) => {
+              const existingIds = new Set(prev.slice(0, prev.length - raw.items.length).map((a) => a.id));
+              const filteredIds = new Set(filtered.map((a) => a.id));
+              return [
+                ...prev.slice(0, prev.length - raw.items.length),
+                ...filtered.filter((a) => !existingIds.has(a.id)),
+              ];
+            });
+          }
+          // 后台刷新热词
+          loadHotWords();
+        }).catch(() => {
+          if (searchIdRef.current === thisSearchId) setFiltering(false);
+        });
       }
-    } finally {
+    } catch (e: any) {
+      if (searchIdRef.current !== thisSearchId) return;
       setLoading(false);
       setLoadingMore(false);
+      if (results.length === 0) {
+        setError('搜索暂不可用：' + (e?.message || '网络错误'));
+      }
+    } finally {
       loadingRef.current = false;
     }
   };
@@ -169,16 +186,22 @@ export default function SearchTab() {
     setPage(1);
     setHasMore(false);
     setTotalCount(0);
-    setSearchSource('init');
+    setFiltering(false);
     lastKeywordRef.current = '';
+    searchIdRef.current++; // 作废所有后台过滤回调
   };
-  const tagStyle = { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 18, borderWidth: 1, borderColor: '#E8E8E8', backgroundColor: '#fff' } as const;
+
+  const tagStyle = {
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 18,
+    borderWidth: 1, borderColor: '#E8E8E8', backgroundColor: '#fff',
+  } as const;
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#F5F5F5' }} edges={['top']}>
-      {/* 搜索栏：无搜索按钮，键盘 returnKey 触发 */}
+      {/* 搜索栏 */}
       <View style={{ flexDirection: 'row', alignItems: 'center', padding: 10, gap: 8 }}>
-        <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 10, paddingHorizontal: 10, height: 40, gap: 6 }}>
+        <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
+          borderRadius: 10, paddingHorizontal: 10, height: 40, gap: 6 }}>
           <Ionicons name="search-outline" size={16} color="#AAA" />
           <TextInput
             ref={inputRef}
@@ -241,14 +264,14 @@ export default function SearchTab() {
             )}
           </View>
         </ScrollView>
-      ) : (loading || loadingMore) && results.length === 0 ? (
-        // 首次加载或自动翻页重试期间，结果还为空时显示 loading，防止提前显示"未找到"
+      ) : loading ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 }}>
           <ActivityIndicator color="#1677FF" size="large" />
-          <Text style={{ fontSize: 13, color: '#AAA' }}>正在过滤无发行版项目…</Text>
+          <Text style={{ fontSize: 13, color: '#AAA' }}>正在搜索…</Text>
         </View>
       ) : error && results.length === 0 ? (
-        <View style={{ margin: 16, padding: 16, borderRadius: 12, backgroundColor: '#FFF2F0', borderWidth: 1, borderColor: '#FFCCC7' }}>
+        <View style={{ margin: 16, padding: 16, borderRadius: 12, backgroundColor: '#FFF2F0',
+          borderWidth: 1, borderColor: '#FFCCC7' }}>
           <Text style={{ color: '#d32f2f', fontSize: 14 }}>{error}</Text>
         </View>
       ) : (
@@ -264,12 +287,12 @@ export default function SearchTab() {
             <View style={{ paddingHorizontal: 16, paddingVertical: 8, gap: 4 }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Text style={{ fontSize: 13, color: '#888' }}>
-                  GitHub 共匹配 {totalCount > 0 ? totalCount.toLocaleString() : results.length} 个项目，已过滤无发行版
+                  GitHub 共匹配 {totalCount > 0 ? totalCount.toLocaleString() : results.length} 个项目
                 </Text>
-                {searchSource === 'remote' && (
+                {filtering && (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                    <Ionicons name="cloud-done-outline" size={12} color="#52C41A" />
-                    <Text style={{ fontSize: 11, color: '#52C41A' }}>GitHub</Text>
+                    <ActivityIndicator size="small" color="#1677FF" />
+                    <Text style={{ fontSize: 11, color: '#1677FF' }}>验证安装包…</Text>
                   </View>
                 )}
               </View>
@@ -278,12 +301,8 @@ export default function SearchTab() {
           ListEmptyComponent={
             <View style={{ alignItems: 'center', paddingTop: 60, gap: 8 }}>
               <Ionicons name="search-outline" size={48} color="#CCC" />
-              <Text style={{ color: '#888', fontSize: 15, fontWeight: '600' }}>
-                未找到相关应用
-              </Text>
-              <Text style={{ color: '#BBB', fontSize: 13 }}>
-                仅展示有安装包的 GitHub 开源项目，试试其他关键词
-              </Text>
+              <Text style={{ color: '#888', fontSize: 15, fontWeight: '600' }}>未找到相关应用</Text>
+              <Text style={{ color: '#BBB', fontSize: 13 }}>试试其他关键词</Text>
             </View>
           }
           ListFooterComponent={
