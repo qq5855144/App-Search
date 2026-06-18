@@ -6,7 +6,7 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import * as DM from '@/lib/downloadManager';
-import { useNotification } from '@/lib/notifications';
+import { useNotification, showSystemProgress, showSystemComplete, showSystemFailed, dismissSystemNotification } from '@/lib/notifications';
 import type { DownloadTask } from '@/lib/downloadManager';
 
 interface DownloadContextValue {
@@ -43,7 +43,7 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // 通知系统：仅在 Native 端，使用应用内横幅
+      // 通知系统：系统通知 + 应用内横幅双通道
       if (Platform.OS !== 'web') {
         const prev = lastNotifState.current.get(task.id);
         const prevKey = prev ? `${prev.status}_${Math.round(prev.progress * 10)}` : '';
@@ -53,6 +53,12 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
           lastNotifState.current.set(task.id, { status: task.status, progress: task.progress });
 
           if (task.status === 'downloading' && task.progress > 0) {
+            // 系统通知：进度条
+            showSystemProgress({
+              id: task.id, appName: task.appName, progress: task.progress,
+              speed: task.speed, multiThreaded: task.multiThreaded,
+            }).catch(() => {});
+            // 应用内横幅：进度条
             const progressPercent = Math.round(task.progress * 100);
             const existingId = notifIdMap.current.get(task.id);
             if (existingId) {
@@ -63,37 +69,26 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
               });
             } else {
               const nid = notif.show({
-                type: 'progress',
-                title: `正在下载 ${task.appName}`,
-                body: `${progressPercent}%`,
-                progress: task.progress,
-                duration: 0,
+                type: 'progress', title: `正在下载 ${task.appName}`,
+                body: `${progressPercent}%`, progress: task.progress, duration: 0,
               });
               notifIdMap.current.set(task.id, nid);
             }
           } else if (task.status === 'completed') {
+            showSystemComplete({ id: task.id, appName: task.appName, totalBytes: task.totalBytes }).catch(() => {});
             const existingId = notifIdMap.current.get(task.id);
             if (existingId) { notif.dismiss(existingId); notifIdMap.current.delete(task.id); }
-            notif.show({
-              type: 'success',
-              title: '下载完成',
-              body: task.appName,
-              duration: 3000,
-            });
+            notif.show({ type: 'success', title: '下载完成', body: task.appName, duration: 3000 });
           } else if (task.status === 'failed') {
+            showSystemFailed({ id: task.id, appName: task.appName, error: task.error }).catch(() => {});
             const existingId = notifIdMap.current.get(task.id);
             if (existingId) { notif.dismiss(existingId); notifIdMap.current.delete(task.id); }
             notif.show({
-              type: 'error',
-              title: '下载失败',
-              body: task.error || '请重试',
-              duration: 5000,
-              action: {
-                label: '重试',
-                onPress: () => { DM.retry(task.id); setTasks(DM.getAllTasks()); },
-              },
+              type: 'error', title: '下载失败', body: task.error || '请重试', duration: 5000,
+              action: { label: '重试', onPress: () => { DM.retry(task.id); setTasks(DM.getAllTasks()); } },
             });
           } else if (task.status === 'cancelled') {
+            dismissSystemNotification(task.id).catch(() => {});
             const existingId = notifIdMap.current.get(task.id);
             if (existingId) { notif.dismiss(existingId); notifIdMap.current.delete(task.id); }
           }

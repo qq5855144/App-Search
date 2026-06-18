@@ -1,15 +1,16 @@
 /**
- * 应用内通知模块（纯 JS，无原生依赖）
+ * 通知模块（双通道：系统通知 + 应用内横幅）
  *
- * 使用 React Context 在应用顶部显示横幅通知：
- * - 下载进行中：进度通知
- * - 下载完成：绿色成功横幅（自动消失 3s）
- * - 下载失败：红色错误横幅（自动消失 5s）
+ * - 系统通知：expo-notifications（动态 import，不在模块顶层加载，避免启动闪退）
+ * - 应用内横幅：React Context 纯 JS 实现（系统通知不可用时自动降级）
  *
- * 架构：通过 NotificationProvider 包裹根组件，Other 组件通过 useNotification() 调用 show()
+ * 架构：
+ *   NotificationProvider 包裹根组件 → 提供 useNotification() hook
+ *   showSystemNotification() 等函数 → 通过动态 import 调用 expo-notifications
+ *   DownloadContext 同时调用两者，系统通知失败自动降级横幅
  */
 import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
-import { View, Text, Animated, Pressable, StyleSheet } from 'react-native';
+import { View, Text, Animated, Pressable, StyleSheet, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 // ─── 类型 ────────────────────────────────────────────────────────────────────
@@ -19,9 +20,9 @@ export interface NotifPayload {
   type: NotifType;
   title: string;
   body: string;
-  progress?: number; // 0~1
+  progress?: number;
   action?: { label: string; onPress: () => void };
-  duration?: number; // ms，0 表示不自动消失
+  duration?: number;
 }
 
 interface NotificationContextValue {
@@ -32,7 +33,10 @@ interface NotificationContextValue {
 
 const NotificationContext = createContext<NotificationContextValue | null>(null);
 
-// ─── Provider ─────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// React Context Provider（应用内横幅）
+// ═══════════════════════════════════════════════════════════════════════════════
+
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<NotifPayload[]>([]);
   const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -45,13 +49,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   const show = useCallback((payload: Omit<NotifPayload, 'id'>): string => {
     const id = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const item: NotifPayload = { ...payload, id };
-    setItems((prev) => [...prev, item]);
-
+    setItems((prev) => [...prev, { ...payload, id }]);
     const dur = payload.duration ?? (payload.type === 'progress' ? 0 : payload.type === 'error' ? 5000 : 3000);
     if (dur > 0) {
-      const timer = setTimeout(() => dismiss(id), dur);
-      timersRef.current.set(id, timer);
+      timersRef.current.set(id, setTimeout(() => dismiss(id), dur));
     }
     return id;
   }, [dismiss]);
@@ -65,7 +66,6 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   return (
     <NotificationContext.Provider value={ctx}>
       {children}
-      {/* 通知横幅层 */}
       <View style={styles.container} pointerEvents="box-none">
         {items.map((n) => (
           <NotificationBanner key={n.id} payload={n} onDismiss={() => dismiss(n.id)} />
@@ -81,7 +81,149 @@ export function useNotification(): NotificationContextValue {
   return ctx;
 }
 
-// ─── 横幅组件 ─────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// 系统通知（expo-notifications — 动态 import，不在模块顶层加载）
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _Notifications: any = null;
+let _notifReady = false;
+let _notifInitFailed = false;
+const CHANNEL_ID = 'downloads';
+const systemNotifMap = new Map<string, string>(); // taskId → notificationId
+
+/** 懒初始化 expo-notifications 原生模块 */
+async function ensureSystemNotif(): Promise<boolean> {
+  if (_notifInitFailed) return false;
+  if (_notifReady && _Notifications) return true;
+  if (Platform.OS === 'web') return false;
+
+  try {
+    _Notifications = await import('expo-notifications');
+    // 设置通知处理（必须在 schedule 之前调用）
+    _Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert: true,
+        shouldPlaySound: false,
+        shouldSetBadge: false,
+        shouldShowBanner: true,
+        shouldShowList: true,
+      }),
+    });
+    // Android 通知渠道
+    if (Platform.OS === 'android') {
+      await _Notifications.setNotificationChannelAsync(CHANNEL_ID, {
+        name: '下载管理',
+        importance: _Notifications.AndroidImportance?.DEFAULT ?? 3,
+        vibrationPattern: [0, 100],
+        lightColor: '#1677FF',
+        sound: null,
+      });
+    }
+    _notifReady = true;
+    return true;
+  } catch {
+    _notifInitFailed = true;
+    return false;
+  }
+}
+
+/** 系统通知：下载进度 */
+export async function showSystemProgress(task: {
+  id: string; appName: string; progress: number; speed: number; multiThreaded: boolean;
+}): Promise<void> {
+  if (!(await ensureSystemNotif())) return;
+  try {
+    const existingId = systemNotifMap.get(task.id);
+    const pct = Math.round(task.progress * 100);
+    const speedStr = task.speed > 0
+      ? `  ${task.speed < 1024 * 1024 ? `${(task.speed / 1024).toFixed(0)} KB/s` : `${(task.speed / 1024 / 1024).toFixed(1)} MB/s`}`
+      : '';
+    const identifier = await _Notifications.scheduleNotificationAsync({
+      identifier: existingId ?? undefined,
+      content: {
+        title: `正在下载 ${task.appName}`,
+        body: `${pct}%${speedStr}${task.multiThreaded ? ' · 多线程' : ''}`,
+        data: { taskId: task.id, type: 'download_progress' },
+        ...(Platform.OS === 'android' ? { channelId: CHANNEL_ID } : {}),
+        autoDismiss: false,
+        sticky: false,
+        priority: 'default' as any,
+      },
+      trigger: null,
+    });
+    if (!existingId) systemNotifMap.set(task.id, identifier);
+  } catch { /* 系统通知失败静默忽略 */ }
+}
+
+/** 系统通知：下载完成 */
+export async function showSystemComplete(task: {
+  id: string; appName: string; totalBytes: number;
+}): Promise<void> {
+  if (!(await ensureSystemNotif())) return;
+  try {
+    const existingId = systemNotifMap.get(task.id);
+    if (existingId) {
+      await _Notifications.dismissNotificationAsync(existingId).catch(() => {});
+      systemNotifMap.delete(task.id);
+    }
+    const sizeStr = task.totalBytes > 0
+      ? ` · ${task.totalBytes < 1024 * 1024 ? `${(task.totalBytes / 1024).toFixed(1)} KB` : `${(task.totalBytes / 1024 / 1024).toFixed(1)} MB`}`
+      : '';
+    await _Notifications.scheduleNotificationAsync({
+      content: {
+        title: '下载完成',
+        body: `${task.appName}${sizeStr}`,
+        data: { taskId: task.id, type: 'download_complete' },
+        ...(Platform.OS === 'android' ? { channelId: CHANNEL_ID } : {}),
+        priority: 'default' as any,
+        autoDismiss: true,
+      },
+      trigger: null,
+    });
+  } catch { /* 静默 */ }
+}
+
+/** 系统通知：下载失败 */
+export async function showSystemFailed(task: {
+  id: string; appName: string; error: string | null;
+}): Promise<void> {
+  if (!(await ensureSystemNotif())) return;
+  try {
+    const existingId = systemNotifMap.get(task.id);
+    if (existingId) {
+      await _Notifications.dismissNotificationAsync(existingId).catch(() => {});
+      systemNotifMap.delete(task.id);
+    }
+    await _Notifications.scheduleNotificationAsync({
+      content: {
+        title: '下载失败',
+        body: `${task.appName} - ${task.error || '请重试'}`,
+        data: { taskId: task.id, type: 'download_failed' },
+        ...(Platform.OS === 'android' ? { channelId: CHANNEL_ID } : {}),
+        priority: 'default' as any,
+        autoDismiss: true,
+      },
+      trigger: null,
+    });
+  } catch { /* 静默 */ }
+}
+
+/** 系统通知：取消 */
+export async function dismissSystemNotification(taskId: string): Promise<void> {
+  if (!(await ensureSystemNotif())) return;
+  try {
+    const notifId = systemNotifMap.get(taskId);
+    if (notifId) {
+      await _Notifications.dismissNotificationAsync(notifId).catch(() => {});
+      systemNotifMap.delete(taskId);
+    }
+  } catch { /* 静默 */ }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 横幅组件
+// ═══════════════════════════════════════════════════════════════════════════════
+
 function NotificationBanner({ payload, onDismiss }: { payload: NotifPayload; onDismiss: () => void }) {
   const opacity = useRef(new Animated.Value(0)).current;
   React.useEffect(() => {
