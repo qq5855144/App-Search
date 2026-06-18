@@ -94,7 +94,9 @@ function mapGitHubRepo(item: any) {
   }
 }
 
-/** 批量检查 GitHub releases，返回有安装包的项目（同时写入 DB 缓存） */
+/** 批量检查 GitHub releases，返回有安装包的项目（同时写入 DB 缓存）
+ *  无数量上限——调用方控制传入 items 的长度
+ */
 async function filterByReleases(
   supabase: any,
   items: any[],
@@ -102,7 +104,7 @@ async function filterByReleases(
 ): Promise<any[]> {
   if (items.length === 0) return []
 
-  // 1. 读 DB 缓存
+  // 1. 读 DB 缓存（一次查全量）
   const { data: cachedRows } = await supabase
     .from('repo_installable_cache')
     .select('owner, repo, has_release, latest_version, latest_release_date, total_downloads, platforms, checked_at')
@@ -141,12 +143,12 @@ async function filterByReleases(
 
   if (unknown.length === 0) return cached_pass
 
-  // 3. 对未知仓库并发查 Releases API（限 30 个防限速）
+  // 3. 对未知仓库并发查 Releases API（全量，无 slice 限制）
   const freshPass: any[] = []
   const upserts: any[] = []
 
   const settled = await Promise.allSettled(
-    unknown.slice(0, 30).map(async (item) => {
+    unknown.map(async (item) => {
       const { owner, repo } = item
       try {
         const r = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/releases?per_page=5`, {
@@ -286,28 +288,44 @@ Deno.serve(async (req) => {
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
 
-    // ── Step 3: catalog 不足，补充 GitHub 搜索 ────────────────────────────
+    // ── Step 3: catalog 不足，多页并发抓 GitHub 直到凑够目标数量 ─────────
     const need = per_page - catalogItems.length
+    // 每页从 GitHub 拉 100 条（API 上限），并发 2 页 = 200 候选，覆盖命中率低的关键词
+    const GH_PER_PAGE = 100
+    const GH_PAGES = 2
     let githubItems: any[] = []
     let githubTotal = 0
 
     try {
-      const ghUrl = `${GITHUB_API}/search/repositories?q=${encodeURIComponent(term)}&sort=${sort}&order=${order}&page=${page}&per_page=${need + 20}`
-      const ghRes = await fetch(ghUrl, { headers: githubHeaders(token) })
-      if (ghRes.ok) {
-        const ghJson = await ghRes.json()
-        githubTotal = ghJson.total_count || 0
-        // 去掉 catalog 已有的，避免重复
-        githubItems = (ghJson.items || [])
+      const ghPages = await Promise.allSettled(
+        Array.from({ length: GH_PAGES }, (_, i) =>
+          fetch(
+            `${GITHUB_API}/search/repositories?q=${encodeURIComponent(term)}&sort=${sort}&order=${order}&page=${page + i}&per_page=${GH_PER_PAGE}`,
+            { headers: githubHeaders(token) }
+          ).then((r) => (r.ok ? r.json() : null))
+        )
+      )
+      for (const p of ghPages) {
+        if (p.status !== 'fulfilled' || !p.value) continue
+        githubTotal = p.value.total_count || githubTotal
+        const items = (p.value.items || [])
           .filter((item: any) => !catalogIds.has(item.id))
           .map(mapGitHubRepo)
+        githubItems.push(...items)
       }
+      // 去重（两页可能重叠）
+      const seen = new Set<number>()
+      githubItems = githubItems.filter((item) => {
+        if (seen.has(item.id)) return false
+        seen.add(item.id)
+        return true
+      })
     } catch {
       // GitHub 失败 → 仅返回 catalog 结果
     }
 
-    // ── Step 4: 对 GitHub 结果做安装包过滤 ──────────────────────────────
-    const filteredGitHub = await filterByReleases(supabase, githubItems.slice(0, need + 10), token)
+    // ── Step 4: 全量并发过滤（无 slice 上限）────────────────────────────
+    const filteredGitHub = await filterByReleases(supabase, githubItems, token)
 
     // ── Step 5: 合并，截断至 per_page ────────────────────────────────────
     const merged = [...catalogItems, ...filteredGitHub].slice(0, per_page)
