@@ -112,6 +112,47 @@ export async function fetchSearchReposRaw(
   return _fetchSearchRepos(q, sort, order, page, perPage)
 }
 
+const SMART_SEARCH_URL = `${SUPABASE_URL}/functions/v1/smart-search`
+
+/**
+ * 服务端一站式搜索：catalog + GitHub + 安装包过滤，单次请求完成
+ * 彻底替代 fetchSearchReposRaw + filterInstallable 两阶段方案
+ */
+export async function smartSearch(
+  q: string,
+  options: { sort?: string; order?: string; page?: number; per_page?: number } = {}
+): Promise<{ items: AppItem[]; total_count: number; has_more: boolean }> {
+  const body = {
+    q,
+    sort: options.sort || 'stars',
+    order: options.order || 'desc',
+    page: options.page || 1,
+    per_page: options.per_page || 30,
+    token: cachedToken,
+  }
+  try {
+    const res = await fetch(SMART_SEARCH_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'apikey': SUPABASE_KEY,
+      },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) throw new Error(`smart-search ${res.status}`)
+    const json = await res.json()
+    const items = (json.data || []).map((item: any) =>
+      item.has_installable_assets !== undefined ? item : mapRepoToApp(item)
+    )
+    return { items, total_count: json.total_count || 0, has_more: json.has_more ?? false }
+  } catch {
+    // 降级：直接 GitHub 搜索（不过滤，兜底展示）
+    const raw = await _fetchSearchRepos(q, body.sort, body.order, body.page, body.per_page)
+    return { items: raw.items, total_count: raw.total_count, has_more: false }
+  }
+}
+
 
 export async function searchRepos(
   q: string,
