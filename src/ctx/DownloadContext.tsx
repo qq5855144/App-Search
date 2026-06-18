@@ -6,7 +6,10 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import * as DM from '@/lib/downloadManager';
-import { showSystemProgress, showSystemComplete, showSystemFailed, dismissSystemNotification } from '@/lib/notifications';
+import {
+  showSystemProgress, showSystemComplete, showSystemFailed,
+  dismissSystemNotification, getNotificationPermissionStatus, requestNotificationPermission,
+} from '@/lib/notifications';
 import type { DownloadTask } from '@/lib/downloadManager';
 
 interface DownloadContextValue {
@@ -18,6 +21,7 @@ interface DownloadContextValue {
   cancel: (id: string) => Promise<void>;
   deleteFile: (id: string) => Promise<void>;
   clearFinished: () => void;
+  clearAllTasks: () => void;
   pauseAll: () => void;
   resumeAll: () => void;
   findByUrl: (url: string) => DownloadTask | undefined;
@@ -83,10 +87,20 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     (t) => t.status === 'pending' || t.status === 'downloading'
   ).length;
 
+  const notifRequestedRef = useRef(false);
+
   const enqueueWithSaf = (params: Parameters<typeof DM.enqueue>[0]): string => {
+    // Android：首次入队时请求 SAF 目录权限
     if (Platform.OS === 'android' && !safRequestedRef.current) {
       safRequestedRef.current = true;
       DM.requestDownloadsPermission();
+    }
+    // 首次下载时懒请求通知权限（iOS/Android）
+    if (Platform.OS !== 'web' && !notifRequestedRef.current) {
+      notifRequestedRef.current = true;
+      getNotificationPermissionStatus().then((s) => {
+        if (s === 'undetermined') requestNotificationPermission().catch(() => {});
+      });
     }
     return DM.enqueue(params);
   };
@@ -106,6 +120,10 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     clearFinished: () => {
       DM.clearFinished();
       setTasks(DM.getAllTasks());
+    },
+    clearAllTasks: () => {
+      DM.clearAllTasks();
+      setTasks([]);
     },
     pauseAll: () => {
       DM.pauseAll();

@@ -778,3 +778,17 @@ export function resumeAll(): void {
   }
   flushQueue();
 }
+
+/** 清除所有内存任务（含正在进行的），用于「清除数据」场景 */
+export function clearAllTasks(): void {
+  for (const [id] of tasks.entries()) {
+    const t = tasks.get(id);
+    if (t && (t.status === 'downloading' || t.status === 'pending')) {
+      const ctrl = abortControllers.get(id);
+      if (ctrl) { ctrl.abort(); abortControllers.delete(id); }
+    }
+    tasks.delete(id);
+    lastProgressTime.delete(id);
+  }
+  subscribers.forEach((cb) => cb({ id: '__refresh__' } as any));
+}

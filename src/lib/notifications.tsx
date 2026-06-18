@@ -143,3 +143,57 @@ export async function dismissSystemNotification(taskId: string): Promise<void> {
     }
   } catch { /* 静默 */ }
 }
+
+/** 查询通知权限状态 */
+export async function getNotificationPermissionStatus(): Promise<
+  'granted' | 'denied' | 'undetermined' | 'unavailable'
+> {
+  if (Platform.OS === 'web') return 'unavailable';
+  try {
+    const N = await import('expo-notifications');
+    const { status } = await N.getPermissionsAsync();
+    return status as 'granted' | 'denied' | 'undetermined';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+/**
+ * 请求通知权限（iOS 弹窗，Android 13+ 弹窗）
+ * 返回 true 表示已授权
+ */
+export async function requestNotificationPermission(): Promise<boolean> {
+  if (Platform.OS === 'web') return false;
+  try {
+    const N = await import('expo-notifications');
+    // 先查已有状态
+    const { status: existing } = await N.getPermissionsAsync();
+    if (existing === 'granted') return true;
+    if (existing === 'denied') {
+      // 已被用户拒绝，引导去系统设置
+      const { Linking } = await import('react-native');
+      await Linking.openSettings().catch(() => {});
+      return false;
+    }
+    // 尚未决定 → 弹出系统权限请求
+    const { status } = await N.requestPermissionsAsync({
+      ios: { allowAlert: true, allowBadge: false, allowSound: false },
+    });
+    if (status === 'granted') {
+      // 顺便确保 Android 通道已创建
+      if (Platform.OS === 'android') {
+        await N.setNotificationChannelAsync('downloads', {
+          name: '下载管理',
+          importance: N.AndroidImportance?.DEFAULT ?? 3,
+          vibrationPattern: [0, 100],
+          lightColor: '#1677FF',
+          sound: null,
+        }).catch(() => {});
+      }
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}

@@ -13,7 +13,7 @@ import { fetchRateLimit } from '@/lib/github';
 import { clearAllCache } from '@/lib/cache';
 import { getEventCounts } from '@/lib/events';
 import { useDownload } from '@/ctx/DownloadContext';
-import { getAllTasks } from '@/lib/downloadManager';
+import { getAllTasks, clearAllTasks } from '@/lib/downloadManager';
 
 type ConfirmTarget = 'downloads' | 'token' | 'cache' | null;
 
@@ -188,8 +188,12 @@ export default function ProfileTab() {
   const handleConfirm = async () => {
     const target = confirmTarget;
     setConfirmTarget(null);
-    if (target === 'downloads') { await clearDownloadHistory(); setDlCount(0); }
-    else if (target === 'token') {
+    if (target === 'downloads') {
+      // 仅清除本地 SQLite 下载记录 + 内存任务，不删除已下载文件
+      await clearDownloadHistory();
+      clearAllTasks();
+      setDlCount(0);
+    } else if (target === 'token') {
       await clearToken(); setTokenState(''); setSaved(false);
       setRateLimit({ remaining: 60, limit: 60, reset: 0 });
     } else if (target === 'cache') { await clearAllCache(); setCacheSize(0); }
@@ -221,9 +225,11 @@ export default function ProfileTab() {
               {confirmTarget === 'token' ? '清除 Token' : '确认清空'}
             </Text>
             <Text style={{ fontSize: 14, color: '#666', textAlign: 'center', lineHeight: 20 }}>
-              {confirmTarget === 'downloads' ? '将清空所有下载记录（不删除本地文件）' :
-               confirmTarget === 'cache' ? '将清除所有本地缓存，下次打开会重新请求数据' :
-               '将删除已保存的 GitHub Token，API 限额恢复 60 次/小时'}
+              {confirmTarget === 'downloads'
+                ? '仅清除本机下载记录和队列任务（不删除已下载文件），此操作不可撤销'
+                : confirmTarget === 'cache'
+                ? '将清除所有本地缓存，下次打开会重新请求数据'
+                : '将删除已保存的 GitHub Token，API 限额恢复 60 次/小时'}
             </Text>
             <View style={{ flexDirection: 'row', gap: 10 }}>
               <Pressable onPress={() => setConfirmTarget(null)}
@@ -261,7 +267,7 @@ export default function ProfileTab() {
             <View style={{ width: 0.5, backgroundColor: '#F0F0F0', marginVertical: 12 }} />
             <StatBadge
               icon="download" iconColor="#1677FF"
-              label={activeCount > 0 ? `下载 · ${activeCount}进行中` : '下载'}
+              label={activeCount > 0 ? `下载管理 · ${activeCount}进行中` : '下载管理'}
               value={String(dlCount)}
               onPress={() => router.push('/downloads' as any)}
             />
@@ -388,19 +394,21 @@ export default function ProfileTab() {
                 onPress={() => setConfirmTarget('cache')}
                 trailingIcon="trash-outline"
               />
-              {dlCount > 0 && (
-                <>
-                  <Divider />
-                  <Row
-                    icon="trash-outline" iconColor="#f5222d"
-                    label="清空下载记录"
-                    value={`${dlCount} 条`}
-                    onPress={() => setConfirmTarget('downloads')}
-                    danger
-                    trailingIcon="trash-outline"
-                  />
-                </>
-              )}
+              <Divider />
+              <Row
+                icon="trash-outline" iconColor="#f5222d"
+                label="清除下载记录"
+                value={dlCount > 0 ? `本地 ${dlCount} 条` : '暂无记录'}
+                onPress={dlCount > 0 ? () => setConfirmTarget('downloads') : undefined}
+                danger={dlCount > 0}
+                trailingIcon="trash-outline"
+              />
+              {/* 说明文字 */}
+              <View style={{ paddingHorizontal: 16, paddingBottom: 12, paddingTop: 4 }}>
+                <Text style={{ fontSize: 11, color: '#BBB', lineHeight: 16 }}>
+                  以上操作仅清除本机本地数据，不影响已下载到 Downloads 目录的文件
+                </Text>
+              </View>
             </View>
           )}
         </View>
