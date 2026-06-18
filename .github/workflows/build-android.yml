@@ -130,7 +130,7 @@ jobs:
           path: android/app/build/outputs/apk/release/*.apk
           retention-days: 30
 
-      # ── 每次 push main：更新 latest 滚动预发布版 ──────────────────────────
+      # ── 每次 push main：发布正式版 Release（覆盖 latest） ─────────────────
       - name: Rename APK with commit SHA (main push)
         if: github.ref == 'refs/heads/main'
         run: |
@@ -139,22 +139,20 @@ jobs:
           mv android/app/build/outputs/apk/release/app-release.apk \
              android/app/build/outputs/apk/release/openappstore-${DATE}-${SHORT_SHA}.apk
 
-      - name: Publish latest rolling release (main push)
+      - name: Publish stable release (main push)
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "Latest Build"
-          prerelease: true
-          make_latest: false
+          name: "Latest Stable Build"
+          prerelease: false
+          make_latest: true
           body: |
-            🤖 **自动构建** — 最新 main 分支 APK
+            ✅ **正式构建** — main 分支最新稳定版 APK
 
             - Commit: [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
             - 构建时间：${{ github.event.head_commit.timestamp }}
             - 消息：${{ github.event.head_commit.message }}
-
-            > 此为滚动预发布版，每次 push 自动覆盖。正式版请关注 `v*` 标签 Release。
           files: android/app/build/outputs/apk/release/*.apk
 
       # ── push v* 标签：创建正式版本 Release ───────────────────────────────
