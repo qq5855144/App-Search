@@ -98,6 +98,21 @@ async function searchGitHubDirect(
   return { items, total_count: json.total_count || 0 }
 }
 
+/**
+ * 仅获取原始搜索结果（不做安装包过滤），供前端两阶段加载使用
+ */
+export async function fetchSearchReposRaw(
+  q: string,
+  options: { sort?: string; order?: string; page?: number; per_page?: number } = {}
+): Promise<{ items: AppItem[]; total_count: number }> {
+  const sort = options.sort || 'stars'
+  const order = options.order || 'desc'
+  const page = options.page || 1
+  const perPage = options.per_page || 50
+  return _fetchSearchRepos(q, sort, order, page, perPage)
+}
+
+
 export async function searchRepos(
   q: string,
   options: { sort?: string; order?: string; page?: number; per_page?: number; installableOnly?: boolean } = {}
