@@ -67,8 +67,8 @@ export default function SearchTab() {
   }, [loadHistory, loadHotWords]));
 
   /**
-   * 单阶段搜索：过滤完成后再展示，严格禁止展示无安装包项目
-   * 过滤超时（12s）时兜底保留已知可安装+状态未知条目，避免空结果
+   * 动态流式搜索：分批过滤，每批有安装包的项目立即追加显示
+   * 严格禁止展示无安装包项目（无任何兜底）
    */
   const performSearch = async (kw: string, pageNum = 1, isLoadMore = false) => {
     const k = kw.trim();
@@ -112,40 +112,62 @@ export default function SearchTab() {
       });
       if (searchIdRef.current !== thisSearchId) return;
 
-      // 过滤：等待完成后再展示，12s 超时后兜底（保留已知可安装+未知状态，剔除已知无安装包）
-      const filtered = raw.items.length > 0
-        ? await filterInstallable(raw.items, 12000)
-        : [];
-      if (searchIdRef.current !== thisSearchId) return;
-
-      // 过滤结果完全为空时用原始列表兜底（极端情况：全部状态未知且超时）
-      const finalItems = filtered.length > 0 ? filtered : raw.items;
-      const morePages = raw.total_count > pageNum * 50;
-
-      if (!isLoadMore) {
-        setResults(finalItems);
-        setTotalCount(raw.total_count);
-        setHasMore(morePages);
-      } else {
-        setResults((prev) => {
-          const existingIds = new Set(prev.map((a) => a.id));
-          return [...prev, ...finalItems.filter((a) => !existingIds.has(a.id))];
-        });
-        setHasMore(morePages && finalItems.length > 0);
-      }
+      setTotalCount(raw.total_count);
+      setHasMore(raw.total_count > pageNum * 50);
       setPage(pageNum);
+
+      if (raw.items.length === 0) {
+        if (!isLoadMore) setLoading(false);
+        else setLoadingMore(false);
+        loadingRef.current = false;
+        loadHotWords();
+        return;
+      }
+
+      // 分批动态过滤：每批 10 个，过滤完立即追加有安装包的项目
+      const BATCH = 10;
+      const existingIds = new Set<number>();
+
+      // 收集已有 id（加载更多时避免重复）
+      if (isLoadMore) {
+        // 通过 ref 或直接读取 state（闭包里 results 已过期，用追加时去重处理）
+      }
+
+      let firstBatch = true;
+      for (let i = 0; i < raw.items.length; i += BATCH) {
+        if (searchIdRef.current !== thisSearchId) return;
+        const batch = raw.items.slice(i, i + BATCH);
+        // 每批独立过滤（严格：只保留 ok:true）
+        const filtered = await filterInstallable(batch, 8000);
+        if (searchIdRef.current !== thisSearchId) return;
+
+        if (filtered.length > 0) {
+          setResults((prev) => {
+            const ids = new Set(prev.map((a) => a.id));
+            const newItems = filtered.filter((a) => !ids.has(a.id));
+            return newItems.length > 0 ? [...prev, ...newItems] : prev;
+          });
+        }
+
+        // 第一批结束后隐藏主 loading（后续批次追加不影响已有展示）
+        if (firstBatch) {
+          firstBatch = false;
+          setLoading(false);
+        }
+      }
+
       loadHotWords();
     } catch (e: any) {
       if (searchIdRef.current !== thisSearchId) return;
-      setLoading(false);
-      setLoadingMore(false);
       if (results.length === 0) {
         setError('搜索暂不可用：' + (e?.message || '网络错误'));
       }
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
-      loadingRef.current = false;
+      if (searchIdRef.current === thisSearchId) {
+        setLoading(false);
+        setLoadingMore(false);
+        loadingRef.current = false;
+      }
     }
   };
 
