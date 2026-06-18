@@ -5,7 +5,6 @@ import { StatusBar } from 'expo-status-bar';
 import { View, Text, Pressable, Platform } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { initToken } from '@/lib/token';
-import { NotificationProvider } from '@/lib/notifications';
 import "../global.css";
 
 // 仅在 Native 端阻止启动屏自动隐藏（Web 端该 API 是空操作，不会出错）
@@ -61,8 +60,7 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <NotificationProvider>
-      <ErrorBoundary>
+    <ErrorBoundary>
         <SafeAreaProvider style={{ flex: 1 }}>
           <StatusBar style="dark" backgroundColor="transparent" translucent={Platform.OS === 'android'} />
           <Stack
@@ -81,6 +79,5 @@ export default function RootLayout() {
           </Stack>
         </SafeAreaProvider>
       </ErrorBoundary>
-    </NotificationProvider>
   );
 }
