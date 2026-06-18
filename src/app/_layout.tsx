@@ -86,9 +86,9 @@ export default function RootLayout() {
             <Stack.Screen name="search-history" />
             <Stack.Screen name="+not-found" />
           </Stack>
-          {/* overlay：仅 Native 端、未就绪时显示，覆盖整个屏幕 */}
-          {!ready && Platform.OS !== 'web' && <AppSplash />}
         </SafeAreaProvider>
+        {/* overlay：渲染在 SafeAreaProvider 之外，绝对覆盖真实屏幕 */}
+        {!ready && Platform.OS !== 'web' && <AppSplash />}
       </DownloadProvider>
     </ErrorBoundary>
   );
