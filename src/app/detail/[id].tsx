@@ -257,7 +257,7 @@ export default function DetailScreen() {
   // 直接打开详情页时导航栈为空，canGoBack() 为 false → 回首页而非 back()
   const goBack = () => {
     if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)');
+    else router.replace('/(tabs)/home' as any);
   };
   const [app, setApp] = useState<AppItem | null>(null);
   const [releases, setReleases] = useState<GitHubRelease[]>([]);
