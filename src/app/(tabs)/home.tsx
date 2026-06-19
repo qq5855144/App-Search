@@ -1,6 +1,6 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, FlatList, ActivityIndicator, BackHandler, Platform, ToastAndroid } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useIsFocused } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/client/supabase';
@@ -73,20 +73,26 @@ export default function HomeTab() {
     if (apps.length === 0) loadData(1, false);
   }, [apps.length, loadData]));
 
-  // Android 返回键：首页双击退出，并显示 Toast 提示
-  // useFocusEffect 保证：home 聚焦时注册，跳到子页面/其他 Tab 时自动注销
-  // Stack 子页面（detail/downloads 等）的返回由原生 Stack 自行处理，无需干预
-  useFocusEffect(useCallback(() => {
+  // Android 返回键：useEffect 注册一次（永久有效），useIsFocused ref 控制仅在首页激活
+  // 避免 useFocusEffect 在 Tabs 里的焦点竞争边缘问题
+  const isFocused = useIsFocused();
+  const isFocusedRef = useRef(isFocused);
+  useEffect(() => { isFocusedRef.current = isFocused; }, [isFocused]);
+
+  useEffect(() => {
     if (Platform.OS !== 'android') return;
     let exitPressCount = 0;
     let exitTimer: ReturnType<typeof setTimeout> | null = null;
 
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      // 不在首页时放行，让 expo-router / Stack 自行处理
+      if (!isFocusedRef.current) return false;
+
       exitPressCount += 1;
       if (exitPressCount === 1) {
         ToastAndroid.show('再按一次退出应用', ToastAndroid.SHORT);
         exitTimer = setTimeout(() => { exitPressCount = 0; }, 2000);
-        return true; // 消费事件，阻止默认退出
+        return true;
       }
       // 2 秒内第二次按下 → 退出
       if (exitTimer) clearTimeout(exitTimer);
@@ -98,9 +104,8 @@ export default function HomeTab() {
     return () => {
       sub.remove();
       if (exitTimer) clearTimeout(exitTimer);
-      exitPressCount = 0;
     };
-  }, []));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onCategoryPress = (key: string) => {
     setActiveCategory(key);
