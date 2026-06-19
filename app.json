@@ -2,7 +2,7 @@
   "expo": {
     "name": "开源应用商店",
     "slug": "open-app-store",
-    "version": "1.0.234",
+    "version": "1.0.256",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "openappstore",

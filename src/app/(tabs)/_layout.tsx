@@ -7,10 +7,10 @@ const TAB_HEIGHT = Platform.OS === 'ios' ? 64 : 60;
 const TAB_PADDING_BOTTOM = Platform.OS === 'ios' ? 10 : 6;
 
 export default function TabsLayout() {
-  // 返回键由各 Tab 屏幕组件内的 useAndroidExitBack() 独立处理。
-  // Layout 组件不参与 Screen 焦点生命周期，不在此注册 BackHandler。
+  // web 套壳架构下 native 端由 WebShell 的 BackHandler 处理返回键，此处无需注册。
   return (
     <Tabs
+      initialRouteName="home"
       screenOptions={{
         tabBarActiveTintColor: '#1677FF',
         tabBarInactiveTintColor: '#999999',
@@ -26,7 +26,7 @@ export default function TabsLayout() {
         headerShown: false,
       }}
     >
-      <Tabs.Screen name="index" options={{ title: '首页', tabBarIcon: ({ color, size }) => <Ionicons name="home-outline" size={size} color={color} /> }} />
+      <Tabs.Screen name="home" options={{ title: '首页', tabBarIcon: ({ color, size }) => <Ionicons name="home-outline" size={size} color={color} /> }} />
       <Tabs.Screen name="discover" options={{ title: '发现', tabBarIcon: ({ color, size }) => <Ionicons name="compass-outline" size={size} color={color} /> }} />
       <Tabs.Screen name="ranking" options={{ title: '榜单', tabBarIcon: ({ color, size }) => <Ionicons name="trophy-outline" size={size} color={color} /> }} />
       <Tabs.Screen name="search" options={{ title: '搜索', tabBarIcon: ({ color, size }) => <Ionicons name="search-outline" size={size} color={color} /> }} />

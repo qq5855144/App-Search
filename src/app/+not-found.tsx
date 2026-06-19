@@ -14,7 +14,7 @@ export default function NotFound() {
         路由未匹配，请返回首页
       </Text>
       <Pressable
-        onPress={() => router.replace('/(tabs)')}
+        onPress={() => router.replace('/(tabs)/home' as any)}
         style={{ backgroundColor: '#2563eb', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 }}
       >
         <Text style={{ color: '#fff', fontWeight: '600' }}>返回首页</Text>

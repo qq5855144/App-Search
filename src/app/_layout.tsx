@@ -1,8 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Stack, useNavigationContainerRef } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { Stack } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { BackHandler, Platform, ToastAndroid, View, Text, Pressable } from 'react-native';
+import { Platform, View, Text, Pressable } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { initToken } from '@/lib/token';
 import { DownloadProvider } from '@/ctx/DownloadContext';
@@ -52,35 +52,6 @@ class ErrorBoundary extends React.Component<
 export default function RootLayout() {
   const [initDone, setInitDone] = useState(false);
   const [showSplash, setShowSplash] = useState(Platform.OS !== 'web');
-  const navRef = useNavigationContainerRef();
-  const lastBackTime = useRef(0);
-
-  // Android 返回键处理：
-  // expo-router 内部已在 NavigationContainer 注册了一个 handler（最早，LIFO 中最后执行）：
-  //   canGoBack() → goBack() + return true（子页面自动返回）
-  //   !canGoBack() → return false → BackHandler.exitApp()（直接退出，无提示）
-  // 我们在此注册一个 "后注册 = 先执行" 的 handler，只拦截"无处可返回"的情况，
-  // 显示 Toast 并等待二次按下，让子页面的返回完全交给 expo-router 内置逻辑。
-  useEffect(() => {
-    if (Platform.OS !== 'android') return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      const canGoBack = navRef.current?.canGoBack?.() ?? false;
-      if (canGoBack) {
-        // 有页面可以返回：不拦截，交给 expo-router 内置 handler 处理
-        return false;
-      }
-      // 已在根页面，无处可返回：拦截并显示 Toast，二次按下才退出
-      const now = Date.now();
-      if (now - lastBackTime.current < 2000) {
-        BackHandler.exitApp();
-        return true;
-      }
-      lastBackTime.current = now;
-      ToastAndroid.show('再按一次退出应用', ToastAndroid.SHORT);
-      return true;
-    });
-    return () => sub.remove();
-  }, [navRef]);
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -103,6 +74,9 @@ export default function RootLayout() {
               gestureEnabled: true,
             }}
           >
+            {/* native 入口：WebView 套壳，返回键通过 WebView.goBack() 处理 */}
+            <Stack.Screen name="index" options={{ animation: 'none' }} />
+            {/* web 平台入口：index 重定向至 (tabs) */}
             <Stack.Screen name="(tabs)" options={{ animation: 'none' }} />
             <Stack.Screen name="detail" />
             <Stack.Screen name="downloads" />
