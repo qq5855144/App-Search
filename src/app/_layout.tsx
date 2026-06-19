@@ -1,8 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Stack, useRouter } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { Stack } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { View, Text, Pressable, Platform, BackHandler } from 'react-native';
+import { View, Text, Pressable, Platform } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { initToken } from '@/lib/token';
 import { DownloadProvider } from '@/ctx/DownloadContext';
@@ -52,10 +52,6 @@ class ErrorBoundary extends React.Component<
 export default function RootLayout() {
   const [initDone, setInitDone] = useState(false);
   const [showSplash, setShowSplash] = useState(Platform.OS !== 'web');
-  const router = useRouter();
-  /** 连按两次返回才退出（Android 系统返回键防误触） */
-  const backPressCount = useRef(0);
-  const backPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -65,30 +61,6 @@ export default function RootLayout() {
       .catch(() => {})
       .finally(() => setInitDone(true));
   }, []);
-
-  // Android 系统返回键：只在导航栈根页面时拦截，避免直接退出
-  useEffect(() => {
-    if (Platform.OS !== 'android') return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      // 若 React Navigation 有页面可以回退，放行让 Stack 处理（不拦截）
-      if (router.canGoBack()) return false;
-      // 到达根页面（Tabs）：第一次按键拦截，2s 内第二次才真正退出
-      backPressCount.current += 1;
-      if (backPressCount.current === 1) {
-        backPressTimer.current = setTimeout(() => {
-          backPressCount.current = 0;
-        }, 2000);
-        return true; // 拦截，防止误触退出
-      }
-      if (backPressTimer.current) clearTimeout(backPressTimer.current);
-      backPressCount.current = 0;
-      return false; // 第二次：放行，系统处理退出
-    });
-    return () => {
-      sub.remove();
-      if (backPressTimer.current) clearTimeout(backPressTimer.current);
-    };
-  }, [router]);
 
   return (
     <ErrorBoundary>
