@@ -15,7 +15,7 @@ const APP_ICON_SVG = `<svg version="1.1" xmlns="http://www.w3.org/2000/svg" widt
 const isWeb = process.env.EXPO_OS === 'web';
 const ICON_SIZE = 120;
 // 最短展示时长：确保用户能看到启动页
-const MIN_DISPLAY_MS = 1800;
+const MIN_DISPLAY_MS = 2500;
 // 淡出动画时长
 const FADE_OUT_MS = 380;
 
