@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { View, Text, Pressable, FlatList, ActivityIndicator } from 'react-native';
+import { View, Text, Pressable, FlatList, ActivityIndicator, BackHandler, Platform, ToastAndroid } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -72,6 +72,35 @@ export default function HomeTab() {
   useFocusEffect(useCallback(() => {
     if (apps.length === 0) loadData(1, false);
   }, [apps.length, loadData]));
+
+  // Android 返回键：首页双击退出，并显示 Toast 提示
+  // useFocusEffect 保证：home 聚焦时注册，跳到子页面/其他 Tab 时自动注销
+  // Stack 子页面（detail/downloads 等）的返回由原生 Stack 自行处理，无需干预
+  useFocusEffect(useCallback(() => {
+    if (Platform.OS !== 'android') return;
+    let exitPressCount = 0;
+    let exitTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      exitPressCount += 1;
+      if (exitPressCount === 1) {
+        ToastAndroid.show('再按一次退出应用', ToastAndroid.SHORT);
+        exitTimer = setTimeout(() => { exitPressCount = 0; }, 2000);
+        return true; // 消费事件，阻止默认退出
+      }
+      // 2 秒内第二次按下 → 退出
+      if (exitTimer) clearTimeout(exitTimer);
+      exitPressCount = 0;
+      BackHandler.exitApp();
+      return true;
+    });
+
+    return () => {
+      sub.remove();
+      if (exitTimer) clearTimeout(exitTimer);
+      exitPressCount = 0;
+    };
+  }, []));
 
   const onCategoryPress = (key: string) => {
     setActiveCategory(key);

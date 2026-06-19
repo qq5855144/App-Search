@@ -2,15 +2,11 @@ import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Platform } from 'react-native';
-import { useAndroidNavigationBack } from '@/hooks/useAndroidNavigationBack';
 
 const TAB_HEIGHT = Platform.OS === 'ios' ? 64 : 60;
 const TAB_PADDING_BOTTOM = Platform.OS === 'ios' ? 10 : 6;
 
 export default function TabsLayout() {
-  // 在 Stack 内部调用，usePathname/useRouter 可正常工作
-  useAndroidNavigationBack();
-
   return (
     <Tabs
       initialRouteName="home"
