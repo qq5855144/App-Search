@@ -50,23 +50,20 @@ class ErrorBoundary extends React.Component<
 }
 
 export default function RootLayout() {
-  const [ready, setReady] = useState(false);
+  const [initDone, setInitDone] = useState(false);
+  const [showSplash, setShowSplash] = useState(Platform.OS !== 'web');
 
   useEffect(() => {
+    // 立即隐藏系统原生闪屏（icon.png 那一帧），由 AppSplash Modal 无缝接管
+    if (Platform.OS !== 'web') {
+      requestAnimationFrame(() => SplashScreen.hideAsync().catch(() => {}));
+    }
+    // 执行初始化；完成后通知 AppSplash 可以开始倒计时
     initToken()
       .catch(() => {})
-      .finally(() => {
-        setReady(true);
-        requestAnimationFrame(() => {
-          if (Platform.OS !== 'web') {
-            SplashScreen.hideAsync().catch(() => {});
-          }
-        });
-      });
+      .finally(() => setInitDone(true));
   }, []);
 
-  // 始终渲染完整布局，AppSplash 以绝对定位覆盖层叠在最上面
-  // 避免 early return 导致 Expo Router 容器限制 AppSplash 尺寸
   return (
     <ErrorBoundary>
       <DownloadProvider>
@@ -87,8 +84,13 @@ export default function RootLayout() {
             <Stack.Screen name="+not-found" />
           </Stack>
         </SafeAreaProvider>
-        {/* overlay：渲染在 SafeAreaProvider 之外，绝对覆盖真实屏幕 */}
-        {!ready && Platform.OS !== 'web' && <AppSplash />}
+        {/* AppSplash 自管最短展示时长(1.8s) + 淡出动画，结束后自行卸载 */}
+        {showSplash && (
+          <AppSplash
+            initDone={initDone}
+            onHidden={() => setShowSplash(false)}
+          />
+        )}
       </DownloadProvider>
     </ErrorBoundary>
   );
