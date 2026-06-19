@@ -48,6 +48,7 @@
     "expo-font": "~55.0.4",
     "expo-haptics": "~55.0.14",
     "expo-image": "catalog:",
+    "expo-intent-launcher": "~55.0.8",
     "expo-linking": "~55.0.7",
     "expo-notifications": "catalog:",
     "expo-router": "55.0.5",

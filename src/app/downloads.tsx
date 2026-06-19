@@ -10,7 +10,7 @@
  * - 存储目录信息
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, FlatList, Pressable, ActivityIndicator, Platform, ScrollView, Linking } from 'react-native';
+import { View, Text, FlatList, Pressable, ActivityIndicator, Platform, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -281,27 +281,22 @@ export default function DownloadsScreen() {
                 onPress={async () => {
                   try {
                     if (Platform.OS === 'android' && isInstaller) {
-                      // Android：用 Linking 打开 content:// URI 触发系统安装界面
-                      // content:// URI 由 SAF 返回，系统会调用 PackageInstaller
-                      const canOpen = await Linking.canOpenURL(item.localUri!);
-                      if (canOpen) {
-                        await Linking.openURL(item.localUri!);
-                      } else {
-                        // fallback：expo-sharing
-                        const Sharing = await import('expo-sharing');
-                        if (await Sharing.isAvailableAsync()) {
-                          await Sharing.shareAsync(item.localUri!, {
-                            mimeType: 'application/vnd.android.package-archive',
-                            dialogTitle: '安装应用',
-                          });
-                        }
-                      }
+                      // Android APK 安装：用 IntentLauncher 直接触发系统包安装器
+                      // SAF content:// URI 需要 FLAG_GRANT_READ_URI_PERMISSION(1)
+                      const IL = await import('expo-intent-launcher');
+                      await IL.startActivityAsync('android.intent.action.VIEW', {
+                        data: item.localUri!,
+                        type: 'application/vnd.android.package-archive',
+                        flags: 1,
+                      });
                     } else {
                       // iOS / Web / 非安装文件：系统分享/打开
                       const Sharing = await import('expo-sharing');
                       if (await Sharing.isAvailableAsync()) {
                         await Sharing.shareAsync(item.localUri!, {
-                          mimeType: isInstallerFile(item.filename) ? 'application/vnd.android.package-archive' : 'application/octet-stream',
+                          mimeType: isInstallerFile(item.filename)
+                            ? 'application/vnd.android.package-archive'
+                            : 'application/octet-stream',
                           dialogTitle: isInstaller ? '安装应用' : '查看文件',
                         });
                       }
