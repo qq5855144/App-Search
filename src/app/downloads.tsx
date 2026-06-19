@@ -10,7 +10,7 @@
  * - 存储目录信息
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, FlatList, Pressable, ActivityIndicator, Platform, ScrollView } from 'react-native';
+import { View, Text, FlatList, Pressable, ActivityIndicator, Platform, ScrollView, Linking } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -275,13 +275,21 @@ export default function DownloadsScreen() {
                 onPress={async () => {
                   try {
                     if (Platform.OS === 'android' && isInstaller) {
-                      // Android：直接唤起系统安装界面
-                      const IntentLauncher = await import('expo-intent-launcher');
-                      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-                        data: item.localUri!,
-                        flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
-                        type: 'application/vnd.android.package-archive',
-                      });
+                      // Android：用 Linking 打开 content:// URI 触发系统安装界面
+                      // content:// URI 由 SAF 返回，系统会调用 PackageInstaller
+                      const canOpen = await Linking.canOpenURL(item.localUri!);
+                      if (canOpen) {
+                        await Linking.openURL(item.localUri!);
+                      } else {
+                        // fallback：expo-sharing
+                        const Sharing = await import('expo-sharing');
+                        if (await Sharing.isAvailableAsync()) {
+                          await Sharing.shareAsync(item.localUri!, {
+                            mimeType: 'application/vnd.android.package-archive',
+                            dialogTitle: '安装应用',
+                          });
+                        }
+                      }
                     } else {
                       // iOS / Web / 非安装文件：系统分享/打开
                       const Sharing = await import('expo-sharing');
