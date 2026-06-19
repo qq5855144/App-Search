@@ -1,13 +1,12 @@
-import React, { useEffect, useState } from 'react';
-import { Stack } from 'expo-router';
+import React, { useEffect, useRef, useState } from 'react';
+import { Stack, useRouter } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { Platform, View, Text, Pressable } from 'react-native';
+import { View, Text, Pressable, Platform, BackHandler } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { initToken } from '@/lib/token';
 import { DownloadProvider } from '@/ctx/DownloadContext';
 import AppSplash from '@/components/AppSplash';
-import WebShell from '@/components/openappstore/WebShell';
 import "../global.css";
 
 // 仅在 Native 端阻止启动屏自动隐藏（Web 端该 API 是空操作，不会出错）
@@ -53,6 +52,10 @@ class ErrorBoundary extends React.Component<
 export default function RootLayout() {
   const [initDone, setInitDone] = useState(false);
   const [showSplash, setShowSplash] = useState(Platform.OS !== 'web');
+  const router = useRouter();
+  /** 连按两次返回才退出（Android 系统返回键防误触） */
+  const backPressCount = useRef(0);
+  const backPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -63,33 +66,39 @@ export default function RootLayout() {
       .finally(() => setInitDone(true));
   }, []);
 
-  // native 端：整个 App 就是一个 WebView 套壳，无 expo-router Stack，
-  // 返回键由 WebShell 内部的 BackHandler 处理，完全隔离于 web 的路由树。
-  // 这样 src/app/index.tsx 无需存在，web 构建时也不会出现多余的 "index" tab。
-  if (Platform.OS !== 'web') {
-    return (
-      <DownloadProvider>
-        <SafeAreaProvider style={{ flex: 1 }}>
-          <WebShell />
-        </SafeAreaProvider>
-        {showSplash && (
-          <AppSplash initDone={initDone} onHidden={() => setShowSplash(false)} />
-        )}
-      </DownloadProvider>
-    );
-  }
+  // Android 系统返回键：只在导航栈根页面时拦截，避免直接退出
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      // 若 React Navigation 有页面可以回退，放行让 Stack 处理（不拦截）
+      if (router.canGoBack()) return false;
+      // 到达根页面（Tabs）：第一次按键拦截，2s 内第二次才真正退出
+      backPressCount.current += 1;
+      if (backPressCount.current === 1) {
+        backPressTimer.current = setTimeout(() => {
+          backPressCount.current = 0;
+        }, 2000);
+        return true; // 拦截，防止误触退出
+      }
+      if (backPressTimer.current) clearTimeout(backPressTimer.current);
+      backPressCount.current = 0;
+      return false; // 第二次：放行，系统处理退出
+    });
+    return () => {
+      sub.remove();
+      if (backPressTimer.current) clearTimeout(backPressTimer.current);
+    };
+  }, [router]);
 
-  // web 端：正常的 expo-router Stack + Tabs 导航
   return (
     <ErrorBoundary>
       <DownloadProvider>
         <SafeAreaProvider style={{ flex: 1 }}>
-          <StatusBar style="dark" backgroundColor="transparent" translucent={false} />
+          <StatusBar style="dark" backgroundColor="transparent" translucent={Platform.OS === 'android'} />
           <Stack
-            initialRouteName="(tabs)"
             screenOptions={{
               headerShown: false,
-              animation: 'none',
+              animation: Platform.OS === 'android' ? 'fade_from_bottom' : Platform.OS === 'ios' ? 'default' : 'none',
               gestureEnabled: true,
             }}
           >
@@ -101,6 +110,13 @@ export default function RootLayout() {
             <Stack.Screen name="+not-found" />
           </Stack>
         </SafeAreaProvider>
+        {/* AppSplash 自管最短展示时长(1.8s) + 淡出动画，结束后自行卸载 */}
+        {showSplash && (
+          <AppSplash
+            initDone={initDone}
+            onHidden={() => setShowSplash(false)}
+          />
+        )}
       </DownloadProvider>
     </ErrorBoundary>
   );

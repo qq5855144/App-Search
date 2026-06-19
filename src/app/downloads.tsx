@@ -11,10 +11,11 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, FlatList, Pressable, ActivityIndicator, Platform, ScrollView } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Circle } from 'react-native-svg';
+import { useFocusEffect } from 'expo-router';
 import { useDownload } from '@/ctx/DownloadContext';
 import { formatSpeed, formatBytes, isInstallerFile } from '@/lib/downloadManager';
 import { getDownloadHistory, clearDownloadHistory } from '@/lib/database';

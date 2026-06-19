@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useCallback, type ReactNode } from 'react';
+import React, { useEffect, useState, type ReactNode } from 'react';
 import { View, Text, Pressable, ScrollView, ActivityIndicator, Linking, Platform, useWindowDimensions } from 'react-native';
-import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchRepoDetail, fetchReleases, fetchReadme, getPlatformFromFilename, filterInstallAssets, filterVerificationAssets } from '@/lib/github';
@@ -257,7 +257,7 @@ export default function DetailScreen() {
   // 直接打开详情页时导航栈为空，canGoBack() 为 false → 回首页而非 back()
   const goBack = () => {
     if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/home' as any);
+    else router.replace('/(tabs)');
   };
   const [app, setApp] = useState<AppItem | null>(null);
   const [releases, setReleases] = useState<GitHubRelease[]>([]);
