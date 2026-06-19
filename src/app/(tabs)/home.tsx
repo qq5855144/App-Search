@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { View, Text, Pressable, FlatList, ActivityIndicator } from 'react-native';
+import { View, Text, Pressable, FlatList, ActivityIndicator, BackHandler, Platform } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -68,6 +68,29 @@ export default function HomeTab() {
       loadingRef.current = false;
     }
   }, [activeCategory]);
+
+  // Android 双击返回退出：home 屏幕聚焦时注册，导航到子页面时自动注销
+  const backPressCount = useRef(0);
+  const backPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useFocusEffect(useCallback(() => {
+    if (Platform.OS !== 'android') return;
+    backPressCount.current = 0;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      backPressCount.current += 1;
+      if (backPressCount.current === 1) {
+        backPressTimer.current = setTimeout(() => { backPressCount.current = 0; }, 2000);
+        return true; // 拦截第一次
+      }
+      if (backPressTimer.current) clearTimeout(backPressTimer.current);
+      backPressCount.current = 0;
+      return false; // 第二次放行退出
+    });
+    return () => {
+      sub.remove();
+      if (backPressTimer.current) clearTimeout(backPressTimer.current);
+      backPressCount.current = 0;
+    };
+  }, []));
 
   useFocusEffect(useCallback(() => {
     if (apps.length === 0) loadData(1, false);

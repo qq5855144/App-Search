@@ -1,8 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Stack } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { View, Text, Pressable, Platform, BackHandler } from 'react-native';
+import { View, Text, Pressable, Platform } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { initToken } from '@/lib/token';
 import { DownloadProvider } from '@/ctx/DownloadContext';
@@ -53,35 +53,11 @@ export default function RootLayout() {
   const [initDone, setInitDone] = useState(false);
   const [showSplash, setShowSplash] = useState(Platform.OS !== 'web');
 
-  const backPressCount = useRef(0);
-  const backPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   useEffect(() => {
     if (Platform.OS !== 'web') {
       requestAnimationFrame(() => SplashScreen.hideAsync().catch(() => {}));
     }
     initToken().catch(() => {}).finally(() => setInitDone(true));
-  }, []);
-
-  // Android 双击返回退出：
-  // react-native-screens Native Stack 子页面的返回在原生层处理（Fragment pop），
-  // 不经过 JS BackHandler，所以此处只会在根 Tabs 页面时被调用。
-  useEffect(() => {
-    if (Platform.OS !== 'android') return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      backPressCount.current += 1;
-      if (backPressCount.current === 1) {
-        backPressTimer.current = setTimeout(() => { backPressCount.current = 0; }, 2000);
-        return true; // 拦截第一次，防止误触退出
-      }
-      if (backPressTimer.current) clearTimeout(backPressTimer.current);
-      backPressCount.current = 0;
-      return false; // 第二次放行，系统退出
-    });
-    return () => {
-      sub.remove();
-      if (backPressTimer.current) clearTimeout(backPressTimer.current);
-    };
   }, []);
 
   return (
