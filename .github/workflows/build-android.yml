@@ -46,10 +46,21 @@ jobs:
           _URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           _KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
           _AID: ${{ secrets.EXPO_PUBLIC_APP_ID }}
+          _WEB: ${{ secrets.EXPO_PUBLIC_WEB_URL }}
         run: |
           [ -n "$_URL" ] && echo "EXPO_PUBLIC_SUPABASE_URL=$_URL" >> .env || true
           [ -n "$_KEY" ] && echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=$_KEY" >> .env || true
           [ -n "$_AID" ] && echo "EXPO_PUBLIC_APP_ID=$_AID"          >> .env || true
+          # web套壳架构：APK 需要在构建时知道 web 版本的 URL
+          # 优先使用 Secret（自定义域名），否则自动推导 GitHub Pages 地址
+          if [ -n "$_WEB" ]; then
+            echo "EXPO_PUBLIC_WEB_URL=$_WEB" >> .env
+            echo "✅ WEB_URL from secret: $_WEB"
+          else
+            PAGES_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+            echo "EXPO_PUBLIC_WEB_URL=${PAGES_URL}" >> .env
+            echo "✅ WEB_URL auto-derived: ${PAGES_URL}"
+          fi
 
       - name: Set versionCode + auto-increment patch version
         run: |

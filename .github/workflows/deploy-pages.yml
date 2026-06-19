@@ -43,10 +43,20 @@ jobs:
           _URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           _KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
           _AID: ${{ secrets.EXPO_PUBLIC_APP_ID }}
+          _WEB: ${{ secrets.EXPO_PUBLIC_WEB_URL }}
         run: |
           [ -n "$_URL" ] && echo "EXPO_PUBLIC_SUPABASE_URL=$_URL" >> .env || true
           [ -n "$_KEY" ] && echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=$_KEY" >> .env || true
           [ -n "$_AID" ] && echo "EXPO_PUBLIC_APP_ID=$_AID"          >> .env || true
+          # web套壳架构：web 版本本身也需要知道自己的 URL（用于 og:url 等 meta 标签）
+          if [ -n "$_WEB" ]; then
+            echo "EXPO_PUBLIC_WEB_URL=$_WEB" >> .env
+            echo "✅ WEB_URL from secret: $_WEB"
+          else
+            PAGES_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+            echo "EXPO_PUBLIC_WEB_URL=${PAGES_URL}" >> .env
+            echo "✅ WEB_URL auto-derived: ${PAGES_URL}"
+          fi
 
       - name: Export web (Expo → dist/)
         run: npx expo export --platform web
