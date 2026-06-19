@@ -12,6 +12,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, FlatList, Pressable, ActivityIndicator, Platform, ScrollView } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { useAndroidGoBack } from '@/hooks/useAndroidGoBack';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Circle } from 'react-native-svg';
@@ -105,6 +106,7 @@ function ActionBtn({ icon, color, bg, onPress, label }: {
 }
 
 export default function DownloadsScreen() {
+  useAndroidGoBack();
   const router = useRouter();
   const { tasks, pause, resume, cancel, deleteFile, clearFinished, pauseAll, resumeAll, retry,
           safGranted, requestDownloadsPermission, refreshSafStatus } = useDownload();

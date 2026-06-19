@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, type ReactNode } from 'react';
 import { View, Text, Pressable, ScrollView, ActivityIndicator, Linking, Platform, useWindowDimensions } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import { useAndroidGoBack } from '@/hooks/useAndroidGoBack';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { fetchRepoDetail, fetchReleases, fetchReadme, getPlatformFromFilename, filterInstallAssets, filterVerificationAssets } from '@/lib/github';
@@ -259,6 +260,7 @@ export default function DetailScreen() {
     if (router.canGoBack()) router.back();
     else router.replace('/(tabs)');
   };
+  useAndroidGoBack();
   const [app, setApp] = useState<AppItem | null>(null);
   const [releases, setReleases] = useState<GitHubRelease[]>([]);
   const [readme, setReadme] = useState('');

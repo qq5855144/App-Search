@@ -4,10 +4,12 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { getFavorites, removeFavorite } from '@/lib/database';
+import { useAndroidGoBack } from '@/hooks/useAndroidGoBack';
 import type { FavoriteItem } from '@/types';
 import AppIcon from '@/components/openappstore/AppIcon';
 
 export default function FavoritesScreen() {
+  useAndroidGoBack();
   const router = useRouter();
   const [items, setItems] = useState<FavoriteItem[]>([]);
 

@@ -5,9 +5,11 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { getSearchHistory, clearSearchHistory } from '@/lib/database';
+import { useAndroidGoBack } from '@/hooks/useAndroidGoBack';
 import EmptyState from '@/components/openappstore/EmptyState';
 
 export default function SearchHistoryScreen() {
+  useAndroidGoBack();
   const router = useRouter();
   const [history, setHistory] = useState<string[]>([]);
 

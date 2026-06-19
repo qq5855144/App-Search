@@ -7,6 +7,7 @@ import { supabase } from '@/client/supabase';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
 import SkeletonCard from '@/components/openappstore/SkeletonCard';
+import { useAndroidExitBack } from '@/hooks/useAndroidExitBack';
 
 const CATEGORIES: {
   key: string; label: string; icon: string; color: string; bg: string;
@@ -23,6 +24,7 @@ const CATEGORIES: {
 ];
 
 export default function HomeTab() {
+  useAndroidExitBack();
   const router = useRouter();
   const [apps, setApps] = useState<AppItem[]>([]);
   const [loading, setLoading] = useState(true);
