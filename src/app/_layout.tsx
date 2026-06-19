@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Stack } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { View, Text, Pressable, Platform } from 'react-native';
+import { View, Text, Pressable, Platform, BackHandler } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { initToken } from '@/lib/token';
 import { DownloadProvider } from '@/ctx/DownloadContext';
@@ -52,6 +52,9 @@ class ErrorBoundary extends React.Component<
 export default function RootLayout() {
   const [initDone, setInitDone] = useState(false);
   const [showSplash, setShowSplash] = useState(Platform.OS !== 'web');
+  /** 连按两次返回才退出（Android 系统返回键防误触） */
+  const backPressCount = useRef(0);
+  const backPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     // 立即隐藏系统原生闪屏（icon.png 那一帧），由 AppSplash Modal 无缝接管
@@ -62,6 +65,35 @@ export default function RootLayout() {
     initToken()
       .catch(() => {})
       .finally(() => setInitDone(true));
+  }, []);
+
+  // Android 系统返回键：在根页面时拦截，避免直接退出应用
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      // 若 React Navigation 可以回退，放行让其处理
+      // BackHandler 监听顺序：React Navigation 的监听器已在内部注册，
+      // 若有 screen 可 goBack，它先响应（返回 true）。
+      // 此回调只在栈顶（Tabs 根页面）时才会执行到。
+      backPressCount.current += 1;
+      if (backPressCount.current === 1) {
+        // 第一次：重置计数器，等待 2s 内第二次
+        backPressTimer.current = setTimeout(() => {
+          backPressCount.current = 0;
+        }, 2000);
+        // 这里无法使用 Alert/Toast（系统限制），所以 return true 静默拦截
+        // 如需提示可使用第三方 toast 库
+        return true; // 拦截第一次退出
+      }
+      // 第二次：清除定时器，真正退出
+      if (backPressTimer.current) clearTimeout(backPressTimer.current);
+      backPressCount.current = 0;
+      return false; // 放行，系统处理退出
+    });
+    return () => {
+      sub.remove();
+      if (backPressTimer.current) clearTimeout(backPressTimer.current);
+    };
   }, []);
 
   return (

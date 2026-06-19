@@ -58,7 +58,7 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
       if (task.status === 'downloading' && task.progress > 0) {
             showSystemProgress({
               id: task.id, appName: task.appName, progress: task.progress,
-              speed: task.speed, multiThreaded: task.multiThreaded,
+              speed: task.speed, multiThreaded: false,
             }).catch(() => {});
           } else if (task.status === 'completed') {
             showSystemComplete({ id: task.id, appName: task.appName, totalBytes: task.totalBytes }).catch(() => {});
@@ -94,7 +94,7 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
   };
 
   const activeCount = tasks.filter(
-    (t) => t.status === 'pending' || t.status === 'downloading' || t.status === 'resolving'
+    (t) => t.status === 'pending' || t.status === 'downloading'
   ).length;
 
   const notifRequestedRef = useRef(false);
