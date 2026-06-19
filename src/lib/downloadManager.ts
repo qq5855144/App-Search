@@ -53,20 +53,9 @@ export async function requestDownloadsPermission(): Promise<boolean> {
       'content://com.android.externalstorage.documents/tree/primary%3ADownload'
     );
     if (!result.granted) return false;
-    let finalUri = result.directoryUri;
-    try {
-      finalUri = await fs.StorageAccessFramework.makeDirectoryAsync(result.directoryUri, APP_FOLDER_NAME);
-    } catch {
-      try {
-        const entries = await fs.StorageAccessFramework.readDirectoryAsync(result.directoryUri);
-        const sub = entries.find((e: string) =>
-          e.includes(encodeURIComponent(APP_FOLDER_NAME)) || e.endsWith(APP_FOLDER_NAME)
-        );
-        if (sub) finalUri = sub;
-      } catch { /* 退回 Download 根目录 */ }
-    }
-    _safDirUri = finalUri;
-    await AsyncStorage.setItem(SAF_URI_KEY, finalUri).catch(() => null);
+    // 直接使用用户选择的目录，不再创建子文件夹
+    _safDirUri = result.directoryUri;
+    await AsyncStorage.setItem(SAF_URI_KEY, result.directoryUri).catch(() => null);
     return true;
   } catch { return false; }
 }
@@ -87,8 +76,15 @@ async function moveToSafDownloads(tempUri: string, filename: string): Promise<st
   try {
     const dirUri = await loadSafUri();
     if (!dirUri) return tempUri;
-    const destUri = await fs.StorageAccessFramework.createFileAsync(dirUri, filename, getMimeType(filename));
-    await fs.StorageAccessFramework.copyAsync({ from: tempUri, to: destUri });
+    // 创建 SAF 目标文件
+    const destUri = await fs.StorageAccessFramework.createFileAsync(
+      dirUri, filename, getMimeType(filename)
+    );
+    // 使用 Base64 读写代替 copyAsync（copyAsync 不支持 file:// → content:// 跨协议复制）
+    const base64 = await fs.readAsStringAsync(tempUri, { encoding: fs.EncodingType.Base64 });
+    await fs.StorageAccessFramework.writeAsStringAsync(destUri, base64, {
+      encoding: fs.EncodingType.Base64,
+    });
     await fs.deleteAsync(tempUri, { idempotent: true }).catch(() => null);
     return destUri;
   } catch { return tempUri; }

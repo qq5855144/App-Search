@@ -152,10 +152,12 @@ export default function ProfileTab() {
       if (t) { setTokenState(t); setSaved(true); }
       setFavCount(stats.total);
       const activeTasks = getAllTasks();
+      // 仅统计本地当前已完成/进行中的任务数，不累计历史总数
+      const completedCount = activeTasks.filter(t => t.status === 'completed').length;
       const activeDlCount = activeTasks.filter(
-        (t) => t.status === 'downloading' || t.status === 'pending'
+        t => t.status === 'downloading' || t.status === 'pending'
       ).length;
-      setDlCount(evCounts.download > 0 ? evCounts.download + activeDlCount : dl.length + activeDlCount);
+      setDlCount(completedCount + activeDlCount);
       fetchRateLimit().then(setRateLimit).catch(() => {});
       try {
         if (typeof localStorage !== 'undefined') {
