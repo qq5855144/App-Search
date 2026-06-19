@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { View, Text, Pressable, Platform } from 'react-native';
+import { View, Text, Pressable, Platform, BackHandler, ToastAndroid } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { initToken } from '@/lib/token';
 import { DownloadProvider } from '@/ctx/DownloadContext';
@@ -52,6 +52,8 @@ class ErrorBoundary extends React.Component<
 export default function RootLayout() {
   const [initDone, setInitDone] = useState(false);
   const [showSplash, setShowSplash] = useState(Platform.OS !== 'web');
+  const router = useRouter();
+  const lastBackTime = useRef(0);
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -61,6 +63,30 @@ export default function RootLayout() {
       .catch(() => {})
       .finally(() => setInitDone(true));
   }, []);
+
+  // Android 系统返回键统一处理
+  // expo-router 的 useRouter() 在根布局内有效，router.canGoBack() 能正确读取导航栈状态。
+  // 使用 subscription.remove() — RN 0.83 正确的清理方式（removeEventListener 已无效）。
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      // 有页面可返回（如详情/下载管理/收藏等子页面）：直接返回上一页
+      if (router.canGoBack()) {
+        router.back();
+        return true;
+      }
+      // 已在根页面（Tabs）：连按两次才退出，给出 Toast 提示
+      const now = Date.now();
+      if (now - lastBackTime.current < 2000) {
+        BackHandler.exitApp();
+        return true;
+      }
+      lastBackTime.current = now;
+      ToastAndroid.show('再按一次退出应用', ToastAndroid.SHORT);
+      return true;
+    });
+    return () => subscription.remove();
+  }, [router]);
 
   return (
     <ErrorBoundary>
