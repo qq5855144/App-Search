@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, FlatList, ActivityIndicator, BackHandler, Platform, ToastAndroid } from 'react-native';
-import { useRouter, useFocusEffect, useIsFocused } from 'expo-router';
+import { View, Text, Pressable, FlatList, ActivityIndicator } from 'react-native';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/client/supabase';
@@ -73,39 +73,8 @@ export default function HomeTab() {
     if (apps.length === 0) loadData(1, false);
   }, [apps.length, loadData]));
 
-  // Android 返回键：useEffect 注册一次（永久有效），useIsFocused ref 控制仅在首页激活
-  // 避免 useFocusEffect 在 Tabs 里的焦点竞争边缘问题
-  const isFocused = useIsFocused();
-  const isFocusedRef = useRef(isFocused);
-  useEffect(() => { isFocusedRef.current = isFocused; }, [isFocused]);
-
-  useEffect(() => {
-    if (Platform.OS !== 'android') return;
-    let exitPressCount = 0;
-    let exitTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      // 不在首页时放行，让 expo-router / Stack 自行处理
-      if (!isFocusedRef.current) return false;
-
-      exitPressCount += 1;
-      if (exitPressCount === 1) {
-        ToastAndroid.show('再按一次退出应用', ToastAndroid.SHORT);
-        exitTimer = setTimeout(() => { exitPressCount = 0; }, 2000);
-        return true;
-      }
-      // 2 秒内第二次按下 → 退出
-      if (exitTimer) clearTimeout(exitTimer);
-      exitPressCount = 0;
-      BackHandler.exitApp();
-      return true;
-    });
-
-    return () => {
-      sub.remove();
-      if (exitTimer) clearTimeout(exitTimer);
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Android 返回键双击退出已移至原生层（plugins/withAndroidDoubleBackExit.js）
+  // 通过 OnBackPressedCallback 在 MainActivity.kt 中处理，彻底绕过 JS BackHandler 限制
 
   const onCategoryPress = (key: string) => {
     setActiveCategory(key);
