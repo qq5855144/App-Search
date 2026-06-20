@@ -74,7 +74,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         await Promise.all(
           batch.map(async (app) => {
             try {
-              const releases = await fetchReleases(app.owner, app.repo, 1);
+              // bypassCache=true：强制跳过 24h TTL 缓存，获取真实最新版本
+              const releases = await fetchReleases(app.owner, app.repo, 1, true);
               if (releases.length > 0) {
                 await updateInstalledLatest(app.app_id, releases[0].tag_name);
               }

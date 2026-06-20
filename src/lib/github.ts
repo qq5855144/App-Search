@@ -394,10 +394,12 @@ export async function fetchRepoDetail(owner: string, repo: string): Promise<AppI
   return result
 }
 
-export async function fetchReleases(owner: string, repo: string, page = 1): Promise<GitHubRelease[]> {
+export async function fetchReleases(owner: string, repo: string, page = 1, bypassCache = false): Promise<GitHubRelease[]> {
   const cacheKey = `releases:${owner}/${repo}:${page}`
-  const cached = await getCache<GitHubRelease[]>(cacheKey)
-  if (cached) return cached
+  if (!bypassCache) {
+    const cached = await getCache<GitHubRelease[]>(cacheKey)
+    if (cached) return cached
+  }
   const data = await callEdgeFunction({
     action: 'releases',
     params: { owner, repo, page },
