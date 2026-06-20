@@ -76,32 +76,35 @@ const withAndroidDoubleBackExit = (config) => {
         `$1\n\n  private var backPressCount = 0\n  private val backPressHandler = Handler(Looper.getMainLooper())\n  private val resetBackPress = Runnable { backPressCount = 0 }`
       );
 
-      // ── 3. 在 super.onCreate 后注册 OnBackPressedCallback ─────────────────
+      // ── 3. 在 super.onCreate() 之前注册 OnBackPressedCallback ────────────
+      //
+      // 关键原理（LIFO 优先级）：
+      //   OnBackPressedDispatcher 按 LIFO 触发：最后注册的最先触发。
+      //   RN 的 mBackPressedCallback 在 super.onCreate() 内注册 → 比我们晚 → 优先级高。
+      //   因此 RN 的回调先触发 → 把事件发给 JS BackHandler → React Navigation 处理导航。
+      //   ① 子页面：JS navigation.goBack() 消费事件 → invokeDefaultOnBackPressed 不触发 → 我们的回调不触发 ✓
+      //   ② 根页面：JS 无法返回 → invokeDefaultOnBackPressed → activity.onBackPressed()
+      //             → dispatcher 再次触发 → RN 回调已禁用 → 我们的回调触发 ✓
+      //
+      // 若把 addCallback 放在 super.onCreate() 之后，我们的优先级反而高于 RN，
+      // 导致子页面也被我们拦截（实为之前版本的 bug）。
       contents = contents.replace(
         /(super\.onCreate\([^)]*\))/,
-        `$1
-    // 双击退出：仅在根页面（无可返回的 Fragment）触发，子页面交由系统导航处理
-    onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+        `onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
       override fun handleOnBackPressed() {
-        if (supportFragmentManager.backStackEntryCount > 0) {
-          // 子页面：暂时禁用本回调，让 react-native-screens 的 Fragment 回调处理导航
-          isEnabled = false
-          this@MainActivity.onBackPressedDispatcher.onBackPressed()
-          isEnabled = true
+        // 执行到这里说明 JS 层（React Navigation）没有消费事件，即当前在根页面
+        this@MainActivity.backPressCount++
+        if (this@MainActivity.backPressCount == 1) {
+          Toast.makeText(this@MainActivity, "再按一次退出应用", Toast.LENGTH_SHORT).show()
+          this@MainActivity.backPressHandler.postDelayed(this@MainActivity.resetBackPress, 2000)
         } else {
-          // 根页面：双击退出逻辑
-          this@MainActivity.backPressCount++
-          if (this@MainActivity.backPressCount == 1) {
-            Toast.makeText(this@MainActivity, "再按一次退出应用", Toast.LENGTH_SHORT).show()
-            this@MainActivity.backPressHandler.postDelayed(this@MainActivity.resetBackPress, 2000)
-          } else {
-            this@MainActivity.backPressHandler.removeCallbacks(this@MainActivity.resetBackPress)
-            this@MainActivity.backPressCount = 0
-            this@MainActivity.finish()
-          }
+          this@MainActivity.backPressHandler.removeCallbacks(this@MainActivity.resetBackPress)
+          this@MainActivity.backPressCount = 0
+          this@MainActivity.finish()
         }
       }
-    })`
+    })
+    $1`
       );
 
       fs.writeFileSync(mainActivityPath, contents, 'utf8');
