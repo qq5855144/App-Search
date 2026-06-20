@@ -38,6 +38,19 @@ function initDb() {
         CREATE TABLE IF NOT EXISTS search_history (
           id TEXT PRIMARY KEY, keyword TEXT NOT NULL UNIQUE, searched_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS installed_apps (
+          id TEXT PRIMARY KEY,
+          app_id INTEGER NOT NULL,
+          app_name TEXT NOT NULL,
+          owner TEXT NOT NULL,
+          repo TEXT NOT NULL,
+          avatar_url TEXT,
+          installed_version TEXT,
+          latest_version TEXT,
+          ignored_version TEXT,
+          last_checked TEXT,
+          installed_at TEXT NOT NULL
+        );
       `);
       return db;
     });
@@ -178,4 +191,97 @@ export async function clearSearchHistory(): Promise<void> {
 
 function tryParse(v: any, fallback: any) {
   try { return typeof v === 'string' ? JSON.parse(v) : v ?? fallback; } catch { return fallback; }
+}
+
+// ─── 已安装应用 ────────────────────────────────────────────────────────────────
+export interface InstalledApp {
+  id: string;
+  app_id: number;
+  app_name: string;
+  owner: string;
+  repo: string;
+  avatar_url: string;
+  installed_version: string;
+  /** 最新版本（定期从 GitHub 检查后写入） */
+  latest_version: string | null;
+  /** 用户点击"忽略更新"后记录的版本，与 latest_version 相同则不展示更新提示 */
+  ignored_version: string | null;
+  last_checked: string | null;
+  installed_at: string;
+}
+
+export async function upsertInstalledApp(app: Omit<InstalledApp, 'id' | 'latest_version' | 'ignored_version' | 'last_checked'>): Promise<void> {
+  if (IS_WEB) {
+    const list = webGet<InstalledApp[]>('oas_installed', []);
+    const idx = list.findIndex((a) => a.app_id === app.app_id);
+    const record: InstalledApp = {
+      id: idx >= 0 ? list[idx].id : String(Date.now()),
+      latest_version: idx >= 0 ? list[idx].latest_version : null,
+      ignored_version: idx >= 0 ? list[idx].ignored_version : null,
+      last_checked: idx >= 0 ? list[idx].last_checked : null,
+      ...app,
+    };
+    if (idx >= 0) list[idx] = record; else list.unshift(record);
+    webSet('oas_installed', list);
+    return;
+  }
+  const db = await initDb();
+  // INSERT OR REPLACE 会丢失 ignored_version/latest_version，用 INSERT … ON CONFLICT UPDATE
+  await db.runAsync(
+    `INSERT INTO installed_apps (id, app_id, app_name, owner, repo, avatar_url, installed_version, installed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(app_id) DO UPDATE SET
+       app_name = excluded.app_name,
+       avatar_url = excluded.avatar_url,
+       installed_version = excluded.installed_version,
+       installed_at = excluded.installed_at`,
+    [String(Date.now()), app.app_id, app.app_name, app.owner, app.repo,
+     app.avatar_url, app.installed_version, app.installed_at],
+  );
+}
+
+export async function getInstalledApps(): Promise<InstalledApp[]> {
+  if (IS_WEB) return webGet<InstalledApp[]>('oas_installed', []);
+  const db = await initDb();
+  return db.getAllAsync('SELECT * FROM installed_apps ORDER BY installed_at DESC') as Promise<InstalledApp[]>;
+}
+
+export async function updateInstalledLatest(
+  appId: number,
+  latestVersion: string,
+): Promise<void> {
+  if (IS_WEB) {
+    const list = webGet<InstalledApp[]>('oas_installed', []);
+    const idx = list.findIndex((a) => a.app_id === appId);
+    if (idx >= 0) { list[idx].latest_version = latestVersion; list[idx].last_checked = new Date().toISOString(); }
+    webSet('oas_installed', list);
+    return;
+  }
+  const db = await initDb();
+  await db.runAsync(
+    'UPDATE installed_apps SET latest_version = ?, last_checked = ? WHERE app_id = ?',
+    [latestVersion, new Date().toISOString(), appId],
+  );
+}
+
+export async function ignoreInstalledUpdate(appId: number, version: string): Promise<void> {
+  if (IS_WEB) {
+    const list = webGet<InstalledApp[]>('oas_installed', []);
+    const idx = list.findIndex((a) => a.app_id === appId);
+    if (idx >= 0) list[idx].ignored_version = version;
+    webSet('oas_installed', list);
+    return;
+  }
+  const db = await initDb();
+  await db.runAsync('UPDATE installed_apps SET ignored_version = ? WHERE app_id = ?', [version, appId]);
+}
+
+export async function removeInstalledApp(appId: number): Promise<void> {
+  if (IS_WEB) {
+    const list = webGet<InstalledApp[]>('oas_installed', []).filter((a) => a.app_id !== appId);
+    webSet('oas_installed', list);
+    return;
+  }
+  const db = await initDb();
+  await db.runAsync('DELETE FROM installed_apps WHERE app_id = ?', [appId]);
 }

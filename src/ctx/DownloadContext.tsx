@@ -10,6 +10,7 @@ import {
   showSystemProgress, showSystemComplete, showSystemFailed,
   dismissSystemNotification, getNotificationPermissionStatus, requestNotificationPermission,
 } from '@/lib/notifications';
+import { upsertInstalledApp } from '@/lib/database';
 import type { DownloadTask } from '@/lib/downloadManager';
 
 interface DownloadContextValue {
@@ -62,6 +63,16 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
             }).catch(() => {});
           } else if (task.status === 'completed') {
             showSystemComplete({ id: task.id, appName: task.appName, totalBytes: task.totalBytes }).catch(() => {});
+            // 下载完成时自动写入"已安装"记录
+            upsertInstalledApp({
+              app_id: task.appId,
+              app_name: task.appName,
+              owner: task.owner,
+              repo: task.repo,
+              avatar_url: task.avatarUrl,
+              installed_version: task.version,
+              installed_at: new Date().toISOString(),
+            }).catch(() => {});
           } else if (task.status === 'failed') {
             showSystemFailed({ id: task.id, appName: task.appName, error: task.error }).catch(() => {});
           } else if (task.status === 'cancelled') {

@@ -16,6 +16,8 @@ const IS_WEB = Platform.OS === 'web';
 const APP_FOLDER_NAME = '开源应用商店';
 const SAF_URI_KEY = '@openappstore/saf_downloads_uri';
 const MAX_CONCURRENT = 3;
+/** 断点续传：持久化 paused/pending 任务到 AsyncStorage，App 重启后可恢复 */
+const TASKS_PERSIST_KEY = '@openappstore/pending_tasks_v2';
 
 function getFS(): typeof _FileSystem | null {
   return IS_WEB ? null : _FileSystem;
@@ -163,6 +165,33 @@ const speedSampler = new Map<string, { ts: number; bytes: number }>();
 
 function genId(): string { return `dl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`; }
 function notify(task: DownloadTask) { subscribers.forEach((cb) => cb({ ...task })); }
+
+// ─── 断点续传持久化 ─────────────────────────────────────────────────────────────
+/** 将 paused/pending 状态的任务写入 AsyncStorage */
+function persistPausedTasks() {
+  if (IS_WEB) return;
+  const toSave = [...tasks.values()].filter(
+    (t) => t.status === 'paused' || t.status === 'pending',
+  );
+  AsyncStorage.setItem(TASKS_PERSIST_KEY, JSON.stringify(toSave)).catch(() => {});
+}
+
+/** App 启动时从 AsyncStorage 恢复断点任务（作为 paused 状态，用户手动 resume） */
+export async function restorePersistedTasks(): Promise<void> {
+  if (IS_WEB) return;
+  try {
+    const raw = await AsyncStorage.getItem(TASKS_PERSIST_KEY);
+    if (!raw) return;
+    const saved: DownloadTask[] = JSON.parse(raw);
+    for (const t of saved) {
+      if (!tasks.has(t.id)) {
+        // 统一恢复为 paused，让用户手动决定是否续传
+        tasks.set(t.id, { ...t, status: 'paused', speed: 0, eta: -1 });
+      }
+    }
+    subscribers.forEach((cb) => cb({ id: '__refresh__' } as any));
+  } catch { /* ignore */ }
+}
 
 function flushQueue() {
   const active = [...tasks.values()].filter((t) => t.status === 'downloading').length;
@@ -381,6 +410,7 @@ export async function pause(id: string): Promise<void> {
   task.speed = 0;
   task.eta = -1;
   notify(task);
+  persistPausedTasks();
 }
 
 export async function resume(id: string): Promise<void> {
@@ -388,6 +418,12 @@ export async function resume(id: string): Promise<void> {
   if (!task || task.status !== 'paused') return;
   task.status = 'pending';
   notify(task);
+  // 恢复后不再需要持久化（已是活跃任务）
+  AsyncStorage.getItem(TASKS_PERSIST_KEY).then((raw) => {
+    if (!raw) return;
+    const saved: DownloadTask[] = JSON.parse(raw).filter((t: DownloadTask) => t.id !== id);
+    AsyncStorage.setItem(TASKS_PERSIST_KEY, JSON.stringify(saved)).catch(() => {});
+  }).catch(() => {});
   flushQueue();
 }
 
@@ -415,6 +451,7 @@ export async function cancel(id: string): Promise<void> {
   tasks.delete(id);
   notify({ ...task });
   flushQueue();
+  persistPausedTasks();
 }
 
 export async function deleteFile(id: string): Promise<void> {

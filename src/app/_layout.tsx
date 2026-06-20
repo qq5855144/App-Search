@@ -7,6 +7,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { initToken } from '@/lib/token';
 import { DownloadProvider } from '@/ctx/DownloadContext';
 import { TranslationProvider } from '@/ctx/TranslationContext';
+import { UpdateProvider } from '@/ctx/UpdateContext';
 import AppSplash from '@/components/AppSplash';
 import "../global.css";
 
@@ -64,7 +65,8 @@ export default function RootLayout() {
   return (
     <ErrorBoundary>
       <DownloadProvider>
-        <TranslationProvider>
+        <UpdateProvider>
+          <TranslationProvider>
           <SafeAreaProvider style={{ flex: 1 }}>
             <StatusBar style="dark" backgroundColor="transparent" translucent={Platform.OS === 'android'} />
             <Stack
@@ -90,6 +92,7 @@ export default function RootLayout() {
             />
           )}
         </TranslationProvider>
+        </UpdateProvider>
       </DownloadProvider>
     </ErrorBoundary>
   );

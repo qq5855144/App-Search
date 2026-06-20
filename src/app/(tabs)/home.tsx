@@ -8,6 +8,9 @@ import { supabase } from '@/client/supabase';
 import type { AppItem } from '@/types';
 import AppCard from '@/components/openappstore/AppCard';
 import SkeletonCard from '@/components/openappstore/SkeletonCard';
+import { useUpdate } from '@/ctx/UpdateContext';
+
+const ORANGE = '#FA8C16';
 
 const CATEGORIES: {
   key: string; label: string; icon: string; color: string; bg: string;
@@ -25,6 +28,7 @@ const CATEGORIES: {
 
 export default function HomeTab() {
   const router = useRouter();
+  const { pendingCount } = useUpdate();
   const [apps, setApps] = useState<AppItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -109,12 +113,21 @@ export default function HomeTab() {
                 <Text style={{ color: '#AAAAAA', fontSize: 14 }}>搜索应用、开发工具…</Text>
               </Pressable>
               <Pressable
-                onPress={() => {}}
+                onPress={() => router.push('/downloads' as any)}
                 style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#fff',
                   alignItems: 'center', justifyContent: 'center',
                   boxShadow: [{ offsetX: 0, offsetY: 1, blurRadius: 3, color: 'rgba(0,0,0,0.06)' }] }}
               >
-                <Ionicons name="notifications-outline" size={20} color="#555" />
+                <Ionicons name="notifications-outline" size={20} color={pendingCount > 0 ? ORANGE : '#555'} />
+                {pendingCount > 0 && (
+                  <View style={{ position: 'absolute', top: 6, right: 6, minWidth: 16, height: 16,
+                    borderRadius: 8, backgroundColor: '#FF4D4F', alignItems: 'center',
+                    justifyContent: 'center', paddingHorizontal: 3, borderWidth: 1.5, borderColor: '#fff' }}>
+                    <Text style={{ fontSize: 9, color: '#fff', fontWeight: '700', lineHeight: 11 }}>
+                      {pendingCount > 99 ? '99+' : pendingCount}
+                    </Text>
+                  </View>
+                )}
               </Pressable>
               <Pressable
                 onPress={() => router.push('/(tabs)/profile' as any)}
