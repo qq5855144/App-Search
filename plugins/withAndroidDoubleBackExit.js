@@ -80,16 +80,25 @@ const withAndroidDoubleBackExit = (config) => {
       contents = contents.replace(
         /(super\.onCreate\([^)]*\))/,
         `$1
+    // 双击退出：仅在根页面（无可返回的 Fragment）触发，子页面交由系统导航处理
     onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
       override fun handleOnBackPressed() {
-        this@MainActivity.backPressCount++
-        if (this@MainActivity.backPressCount == 1) {
-          Toast.makeText(this@MainActivity, "再按一次退出应用", Toast.LENGTH_SHORT).show()
-          this@MainActivity.backPressHandler.postDelayed(this@MainActivity.resetBackPress, 2000)
+        if (supportFragmentManager.backStackEntryCount > 0) {
+          // 子页面：暂时禁用本回调，让 react-native-screens 的 Fragment 回调处理导航
+          isEnabled = false
+          this@MainActivity.onBackPressedDispatcher.onBackPressed()
+          isEnabled = true
         } else {
-          this@MainActivity.backPressHandler.removeCallbacks(this@MainActivity.resetBackPress)
-          this@MainActivity.backPressCount = 0
-          this@MainActivity.finish()
+          // 根页面：双击退出逻辑
+          this@MainActivity.backPressCount++
+          if (this@MainActivity.backPressCount == 1) {
+            Toast.makeText(this@MainActivity, "再按一次退出应用", Toast.LENGTH_SHORT).show()
+            this@MainActivity.backPressHandler.postDelayed(this@MainActivity.resetBackPress, 2000)
+          } else {
+            this@MainActivity.backPressHandler.removeCallbacks(this@MainActivity.resetBackPress)
+            this@MainActivity.backPressCount = 0
+            this@MainActivity.finish()
+          }
         }
       }
     })`
