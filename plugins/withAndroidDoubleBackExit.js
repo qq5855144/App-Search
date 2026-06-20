@@ -61,14 +61,14 @@ const withAndroidDoubleBackExit = (config) => {
     // 仅当无页面可后退时触发（子页面由 react-native-screens 自身消费）
     onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
       override fun handleOnBackPressed() {
-        backPressCount++
-        if (backPressCount == 1) {
+        this@MainActivity.backPressCount++
+        if (this@MainActivity.backPressCount == 1) {
           Toast.makeText(this@MainActivity, "再按一次退出应用", Toast.LENGTH_SHORT).show()
-          backPressHandler.postDelayed(resetBackPress, 2000)
+          this@MainActivity.backPressHandler.postDelayed(this@MainActivity.resetBackPress, 2000)
         } else {
-          backPressHandler.removeCallbacks(resetBackPress)
-          backPressCount = 0
-          finish()
+          this@MainActivity.backPressHandler.removeCallbacks(this@MainActivity.resetBackPress)
+          this@MainActivity.backPressCount = 0
+          this@MainActivity.finish()
         }
       }
     })`
