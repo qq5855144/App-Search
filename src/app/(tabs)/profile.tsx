@@ -133,6 +133,7 @@ export default function ProfileTab() {
 
   const [token, setTokenState] = useState('');
   const [githubExpanded, setGithubExpanded] = useState(false);
+  const [translateExpanded, setTranslateExpanded] = useState(false);
   const [dataExpanded, setDataExpanded] = useState(false);
   const [aboutExpanded, setAboutExpanded] = useState(false);
   const tokenInputRef = useRef<TextInput>(null);
@@ -379,74 +380,82 @@ export default function ProfileTab() {
           )}
         </View>
 
-        {/* ════ 三、翻译服务 ════ */}
+        {/* ════ 三、翻译服务（列表折叠，语言行各含互斥开关） ════ */}
         <SectionTitle title="翻译服务" />
         <View style={{ marginHorizontal: 16, backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden', marginBottom: 4 }}>
-          {/* 开关行 */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14 }}>
-            <Ionicons name="language-outline" size={18} color="#1677FF" style={{ marginRight: 10 }} />
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 14, color: '#1A1A1A', fontWeight: '500' }}>自动翻译</Text>
-              <Text style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
-                翻译屏幕内的非目标语言文字
+          <CollapseHeader
+            icon="language-outline" iconColor="#1677FF"
+            title="自动翻译"
+            badge={
+              <Text style={{ fontSize: 12, color: translateEnabled ? '#1677FF' : '#BBB' }}>
+                {translateEnabled ? (targetLang === 'zh' ? '译为中文' : '译为英文') : '已关闭'}
               </Text>
-            </View>
-            <Switch
-              value={translateEnabled}
-              onValueChange={setTranslateEnabled}
-              trackColor={{ false: '#E0E0E0', true: '#1677FF' }}
-              thumbColor="#fff"
-            />
-          </View>
+            }
+            expanded={translateExpanded}
+            onToggle={() => setTranslateExpanded((v) => !v)}
+          />
 
-          {/* 目标语言选择（仅在启用时展示） */}
-          {translateEnabled && (
-            <>
-              <View style={{ height: 0.5, backgroundColor: '#F0F0F0', marginHorizontal: 16 }} />
-              <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>
-                <Text style={{ fontSize: 12, color: '#999', marginBottom: 10 }}>翻译目标语言</Text>
-                <View style={{ flexDirection: 'row', gap: 10 }}>
-                  {([
-                    { value: 'zh' as TargetLang, label: '🇨🇳 中文', desc: '翻译所有非中文内容' },
-                    { value: 'en' as TargetLang, label: '🇺🇸 English', desc: '翻译所有非英文内容' },
-                  ]).map((item) => {
-                    const active = targetLang === item.value;
-                    return (
-                      <Pressable
-                        key={item.value}
-                        onPress={() => setTargetLang(item.value)}
-                        style={{
-                          flex: 1, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14,
-                          borderWidth: active ? 1.5 : 1,
-                          borderColor: active ? '#1677FF' : '#E8E8E8',
-                          backgroundColor: active ? '#EEF5FF' : '#FAFAFA',
-                          alignItems: 'center', gap: 4,
-                        }}
-                      >
-                        <Text style={{ fontSize: 16 }}>{item.label}</Text>
-                        <Text style={{ fontSize: 11, color: active ? '#1677FF' : '#999', textAlign: 'center' }}>
-                          {item.desc}
-                        </Text>
-                        {active && (
-                          <Ionicons name="checkmark-circle" size={14} color="#1677FF" />
-                        )}
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              </View>
-              <View style={{ height: 0.5, backgroundColor: '#F0F0F0', marginHorizontal: 16 }} />
-              {/* 清除翻译缓存 */}
-              <Pressable
-                onPress={async () => { await clearTranslationCache(); }}
-                android_ripple={{ color: '#F5F5F5' }}
-                style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 13, gap: 10 }}
+          {translateExpanded && (
+            <View style={{ borderTopWidth: 0.5, borderTopColor: '#F0F0F0' }}>
+              {/* 译为中文行 */}
+              <View
+                style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16,
+                  paddingVertical: 13, backgroundColor: '#fff' }}
               >
-                <Ionicons name="refresh-outline" size={16} color="#FA8C16" />
-                <Text style={{ flex: 1, fontSize: 14, color: '#555' }}>清除翻译缓存</Text>
-                <Ionicons name="chevron-forward" size={14} color="#CCC" />
-              </Pressable>
-            </>
+                <View style={{ width: 34, height: 34, borderRadius: 9, backgroundColor: '#1677FF15',
+                  alignItems: 'center', justifyContent: 'center', marginRight: 13 }}>
+                  <Text style={{ fontSize: 17 }}>🇨🇳</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, color: '#1A1A1A' }}>译为中文</Text>
+                  <Text style={{ fontSize: 12, color: '#999', marginTop: 1 }}>翻译所有非中文内容</Text>
+                </View>
+                <Switch
+                  value={translateEnabled && targetLang === 'zh'}
+                  onValueChange={(v) => {
+                    if (v) { setTranslateEnabled(true); setTargetLang('zh'); }
+                    else { setTranslateEnabled(false); }
+                  }}
+                  trackColor={{ false: '#E0E0E0', true: '#1677FF' }}
+                  thumbColor="#fff"
+                />
+              </View>
+
+              <Divider />
+
+              {/* 译为英文行 */}
+              <View
+                style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16,
+                  paddingVertical: 13, backgroundColor: '#fff' }}
+              >
+                <View style={{ width: 34, height: 34, borderRadius: 9, backgroundColor: '#1677FF15',
+                  alignItems: 'center', justifyContent: 'center', marginRight: 13 }}>
+                  <Text style={{ fontSize: 17 }}>🇺🇸</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, color: '#1A1A1A' }}>译为英文</Text>
+                  <Text style={{ fontSize: 12, color: '#999', marginTop: 1 }}>翻译所有非英文内容</Text>
+                </View>
+                <Switch
+                  value={translateEnabled && targetLang === 'en'}
+                  onValueChange={(v) => {
+                    if (v) { setTranslateEnabled(true); setTargetLang('en'); }
+                    else { setTranslateEnabled(false); }
+                  }}
+                  trackColor={{ false: '#E0E0E0', true: '#1677FF' }}
+                  thumbColor="#fff"
+                />
+              </View>
+
+              <Divider />
+
+              {/* 清除翻译缓存 */}
+              <Row
+                icon="refresh-outline" iconColor="#FA8C16"
+                label="清除翻译缓存"
+                onPress={async () => { await clearTranslationCache(); }}
+              />
+            </View>
           )}
         </View>
 
