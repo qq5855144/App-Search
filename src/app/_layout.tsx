@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Stack } from 'expo-router';
+import { Stack, router } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { View, Text, Pressable, Platform } from 'react-native';
+import { View, Text, Pressable, Platform, BackHandler } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { initToken } from '@/lib/token';
 import { DownloadProvider } from '@/ctx/DownloadContext';
@@ -58,6 +58,24 @@ export default function RootLayout() {
       requestAnimationFrame(() => SplashScreen.hideAsync().catch(() => {}));
     }
     initToken().catch(() => {}).finally(() => setInitDone(true));
+  }, []);
+
+  // Android 硬件返回键：优先用 expo-router 的 canGoBack/back 处理页面返回。
+  // @react-navigation/native 内置的 useBackButton 使用 NavigationContainerRef.canGoBack()，
+  // 在某些 expo-router 版本中对嵌套 Stack 判断不准确（返回 false），
+  // 导致子页面按返回键也会触发 invokeDefaultOnBackPressed（双击退出）。
+  // 此监听注册时机晚于 NavigationContainer 的监听，BackHandler 按 LIFO 顺序触发，
+  // 因此我们的监听最先执行：子页面 → router.back(); 根页面 → 返回 false → invokeDefaultOnBackPressed。
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (router.canGoBack()) {
+        router.back();
+        return true;
+      }
+      return false;
+    });
+    return () => sub.remove();
   }, []);
 
   return (
