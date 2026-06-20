@@ -10,55 +10,76 @@
  * - 注册顺序（先→后）：RN mBackPressedCallback → 本插件 → react-native-screens Fragment callbacks
  * - LIFO 触发顺序（后→先）：react-native-screens callbacks（处理页面后退）→ 本插件（双击退出）→ RN
  *
- * 行为：
- * - 子页面（detail/下载/收藏等）：react-native-screens 消费事件，本插件不触发 ✓
- * - 首页（无可返回页面）：本插件触发 → 首次显示 Toast → 2s 内再次触发 → finish()
+ * 使用 withDangerousMod（直接操作文件系统），与 withAndroidSplashFix 同款模式，
+ * 兼容性最好，不依赖构建系统的 mod provider 注册。
  */
 
-const { withMainActivity } = require('expo/config-plugins');
+const { withDangerousMod } = require('expo/config-plugins');
+const path = require('path');
+const fs = require('fs');
 
 const withAndroidDoubleBackExit = (config) => {
-  return withMainActivity(config, (mod) => {
-    let contents = mod.modResults.contents;
+  return withDangerousMod(config, [
+    'android',
+    async (config) => {
+      const projectRoot = config.modRequest.projectRoot;
 
-    // ── 1. 添加 import ──────────────────────────────────────────────────────
-    const importBlock = [
-      'import android.os.Handler',
-      'import android.os.Looper',
-      'import android.widget.Toast',
-      'import androidx.activity.OnBackPressedCallback',
-    ];
-    for (const imp of importBlock) {
-      if (!contents.includes(imp)) {
-        // 在最后一个 import 行后插入
-        contents = contents.replace(
-          /(^import .+$)/m,
-          `$1\n${imp}`
-        );
+      // 动态查找 MainActivity.kt（支持任意 package name）
+      const javaDir = path.join(projectRoot, 'android/app/src/main/java');
+      let mainActivityPath = null;
+
+      if (fs.existsSync(javaDir)) {
+        // 递归查找 MainActivity.kt
+        const find = (dir) => {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (entry.isDirectory()) {
+              const result = find(path.join(dir, entry.name));
+              if (result) return result;
+            } else if (entry.name === 'MainActivity.kt') {
+              return path.join(dir, entry.name);
+            }
+          }
+          return null;
+        };
+        mainActivityPath = find(javaDir);
       }
-    }
 
-    // ── 2. 在 class 体内添加字段（仅一次）─────────────────────────────────
-    if (!contents.includes('backPressCount')) {
-      // 匹配 class MainActivity ... { 后的第一个换行，插入字段
+      if (!mainActivityPath) {
+        console.warn('[withAndroidDoubleBackExit] MainActivity.kt not found, skipping');
+        return config;
+      }
+
+      let contents = fs.readFileSync(mainActivityPath, 'utf8');
+
+      // 幂等检查：已处理过则跳过
+      if (contents.includes('backPressCount')) {
+        console.log('[withAndroidDoubleBackExit] Already patched, skipping');
+        return config;
+      }
+
+      // ── 1. 添加 import ────────────────────────────────────────────────────
+      const importsToAdd = [
+        'import android.os.Handler',
+        'import android.os.Looper',
+        'import android.widget.Toast',
+        'import androidx.activity.OnBackPressedCallback',
+      ];
+      for (const imp of importsToAdd) {
+        if (!contents.includes(imp)) {
+          contents = contents.replace(/(^import .+$)/m, `$1\n${imp}`);
+        }
+      }
+
+      // ── 2. 在 class body 添加字段 ─────────────────────────────────────────
       contents = contents.replace(
         /(class MainActivity[^{]*\{)/,
-        `$1
-
-  private var backPressCount = 0
-  private val backPressHandler = Handler(Looper.getMainLooper())
-  private val resetBackPress = Runnable { backPressCount = 0 }`
+        `$1\n\n  private var backPressCount = 0\n  private val backPressHandler = Handler(Looper.getMainLooper())\n  private val resetBackPress = Runnable { backPressCount = 0 }`
       );
-    }
 
-    // ── 3. 在 super.onCreate(...) 之后注册 OnBackPressedCallback ───────────
-    if (!contents.includes('onBackPressedDispatcher.addCallback')) {
-      // 匹配 super.onCreate(null) 或 super.onCreate(savedInstanceState)
+      // ── 3. 在 super.onCreate 后注册 OnBackPressedCallback ─────────────────
       contents = contents.replace(
         /(super\.onCreate\([^)]*\))/,
         `$1
-    // 双击退出：LIFO 确保在 react-native-screens Fragment 回调之前，
-    // 仅当无页面可后退时触发（子页面由 react-native-screens 自身消费）
     onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
       override fun handleOnBackPressed() {
         this@MainActivity.backPressCount++
@@ -73,11 +94,12 @@ const withAndroidDoubleBackExit = (config) => {
       }
     })`
       );
-    }
 
-    mod.modResults.contents = contents;
-    return mod;
-  });
+      fs.writeFileSync(mainActivityPath, contents, 'utf8');
+      console.log('[withAndroidDoubleBackExit] Patched', mainActivityPath);
+      return config;
+    },
+  ]);
 };
 
 module.exports = withAndroidDoubleBackExit;
