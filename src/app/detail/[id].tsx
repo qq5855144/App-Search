@@ -14,6 +14,7 @@ import Marked, { Renderer } from 'react-native-marked';
 import { Image } from 'expo-image';
 import type { ImageStyle } from 'react-native';
 import { useDownload } from '@/ctx/DownloadContext';
+import { useTranslation } from '@/ctx/TranslationContext';
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -257,6 +258,7 @@ export default function DetailScreen() {
   const { owner, repo } = useLocalSearchParams<{ owner: string; repo: string }>();
   const router = useRouter();
   const { enqueue, findByUrl } = useDownload();
+  const { translate, enabled, targetLang } = useTranslation();
   // 直接打开详情页时导航栈为空，canGoBack() 为 false → 回首页而非 back()
   const goBack = () => {
     if (router.canGoBack()) router.back();
@@ -269,6 +271,9 @@ export default function DetailScreen() {
   const [favored, setFavored] = useState(false);
   const [error, setError] = useState('');
   const [expandedRelease, setExpandedRelease] = useState<number | null>(null);
+  // 翻译后的展示文本（翻译关闭时等于原文）
+  const [displayDesc, setDisplayDesc] = useState('');
+  const [displayReadme, setDisplayReadme] = useState('');
 
   useEffect(() => {
     if (!owner || !repo) return;
@@ -300,6 +305,24 @@ export default function DetailScreen() {
       }
     })();
   }, [owner, repo]);
+
+  // 翻译描述和 README（enabled/targetLang/原文 任一变化时重新执行）
+  useEffect(() => {
+    (async () => {
+      const desc = app?.description || '';
+      if (!enabled) {
+        setDisplayDesc(desc);
+        setDisplayReadme(readme);
+        return;
+      }
+      const [td, tr] = await Promise.all([
+        desc ? translate(desc) : Promise.resolve(''),
+        readme ? translate(readme) : Promise.resolve(''),
+      ]);
+      setDisplayDesc(td);
+      setDisplayReadme(tr);
+    })();
+  }, [app?.description, readme, enabled, targetLang]);
 
   const toggleFav = async () => {
     if (!app) return;
@@ -379,7 +402,7 @@ export default function DetailScreen() {
 
           {/* 描述 */}
           {app.description && (
-            <Text style={{ fontSize: 14, color: '#555', lineHeight: 22 }}>{app.description}</Text>
+            <Text style={{ fontSize: 14, color: '#555', lineHeight: 22 }}>{displayDesc || app.description}</Text>
           )}
         </View>
 
@@ -529,7 +552,7 @@ export default function DetailScreen() {
         </View>
 
         {/* README Markdown 渲染 */}
-        {readme ? <MarkdownSection content={readme} owner={owner ?? ''} repo={repo ?? ''} /> : null}
+        {(displayReadme || readme) ? <MarkdownSection content={displayReadme || readme} owner={owner ?? ''} repo={repo ?? ''} /> : null}
       </ScrollView>
     </SafeAreaView>
   );
