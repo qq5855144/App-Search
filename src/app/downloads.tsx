@@ -216,16 +216,15 @@ export default function DownloadsScreen() {
             </Text>
             <Text style={{ fontSize: 12, color: '#888' }} numberOfLines={1}>{item.filename}</Text>
             {item.status === 'downloading' && (
-              <View style={{ gap: 2 }}>
-                {/* 第一行：百分比 + 速率（固定同行，不换行） */}
-                <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-                  {pct != null
-                    ? <Text style={{ fontSize: 12, color: BLUE, fontWeight: '600' }}>{pct}%</Text>
-                    : <Text style={{ fontSize: 12, color: BLUE, fontWeight: '600' }}>下载中…</Text>
-                  }
-                  {spd ? <Text style={{ fontSize: 11, color: '#999' }}>{spd}</Text> : null}
-                </View>
-                {/* 第二行：已下载/总大小 + 剩余时间（固定同行） */}
+              <View style={{ gap: 1 }}>
+                {/* 第一行：百分比 */}
+                {pct != null
+                  ? <Text style={{ fontSize: 12, color: BLUE, fontWeight: '600' }}>{pct}%</Text>
+                  : <Text style={{ fontSize: 12, color: BLUE, fontWeight: '600' }}>下载中…</Text>
+                }
+                {/* 第二行：速率（独占一行，避免宽度变化引起跳行） */}
+                {spd ? <Text style={{ fontSize: 11, color: '#999' }}>{spd}</Text> : null}
+                {/* 第三行：已下载/总大小 + 剩余时间 */}
                 {(item.totalBytes > 0 || item.eta > 0) && (
                   <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
                     {item.totalBytes > 0 && (
