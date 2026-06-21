@@ -1,10 +1,10 @@
 /**
- * 下载管理器 v10 — fetch 下载 + 分块 btoa 编码
+ * 下载管理器 v11 — XHR 解析重定向 + createDownloadResumable 下载
  *
  * 设计决策：
- * 1. 统一用 fetch 下载：原生 HTTP 栈自动跟随 302→CDN，不依赖 expo-file-system 的 HTTP 层
- * 2. 分块 btoa 编码：32KB 分块 → btoa → 拼接，避免手动逐字节循环 OOM
- * 3. 进度：fetch 完成后显示 100%，下载中显示 0%
+ * 1. XHR HEAD 解析重定向：XMLHttpRequest.responseURL 可获取 302 后的最终 CDN URL
+ * 2. createDownloadResumable 下载：原生下载，有进度回调，支持断点续传
+ * 3. 非 GitHub URL 直接下载：不走重定向解析
  * 4. SAF 保存：Android 完成后写入公共 Downloads
  * 5. 自动重试：临时网络错误自动重试 1 次
  */
@@ -176,6 +176,8 @@ type ProgressCallback = (task: DownloadTask | { id: typeof REFRESH_EVENT }) => v
 const tasks = new Map<string, DownloadTask>();
 const subscribers = new Set<ProgressCallback>();
 const speedSampler = new Map<string, { ts: number; bytes: number }>();
+/** 活跃的 createDownloadResumable 实例，用于 pause/cancel */
+const activeResumables = new Map<string, ReturnType<typeof _FileSystem.createDownloadResumable>>();
 
 function genId(): string { return `dl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`; }
 function notify(task: DownloadTask) { subscribers.forEach((cb) => cb({ ...task })); }
@@ -228,21 +230,54 @@ async function cleanupTempDir(id: string) {
   await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
 }
 
+/** 校验下载完成的文件：检查存在性、大小（与预期对比） */
+async function validateFile(uri: string, expectedSize: number): Promise<string | null> {
+  if (IS_WEB || uri.startsWith('content://')) return null;
+  const fs = getFS();
+  if (!fs) return null;
+  try {
+    const info = await fs.getInfoAsync(uri);
+    if (!info.exists) return '文件不存在，下载可能未完成';
+    const actualSize = (info as any).size ?? 0;
+    if (actualSize === 0) return '文件大小为 0，下载可能不完整';
+    if (expectedSize > 0 && actualSize < expectedSize * 0.95) {
+      return `文件大小异常（预期 ${formatBytes(expectedSize)}，实际 ${formatBytes(actualSize)}），下载可能不完整`;
+    }
+    return null;
+  } catch { return null; }
+}
+
 // ─── 核心下载逻辑 ─────────────────────────────────────────────────────────────
 
-/** Uint8Array → Base64（分块 btoa，每 32KB 一块，避免大文件 OOM） */
-function uint8ToBase64Chunked(bytes: Uint8Array): string {
-  const CHUNK = 0x8000; // 32KB
-  let result = '';
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    const end = Math.min(i + CHUNK, bytes.length);
-    let binary = '';
-    for (let j = i; j < end; j++) {
-      binary += String.fromCharCode(bytes[j]);
+/** GitHub release 下载 URL 模式（需要解析重定向的 URL） */
+const GITHUB_URL_PATTERN = /^https?:\/\/(github\.com|api\.github\.com|objects\.githubusercontent\.com)\//;
+
+/**
+ * 使用 XMLHttpRequest HEAD 请求解析重定向后的最终 URL。
+ * 与 fetch 不同，XHR 的 responseURL 在 React Native 中可用，
+ * 可以获取 302 重定向后的真实 CDN 地址。
+ */
+function resolveRedirectUrl(url: string): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('HEAD', url, true);
+      xhr.timeout = 10000; // 10s 超时
+
+      xhr.onload = () => {
+        // responseURL 是跟随重定向后的最终 URL（RN 中可用）
+        const finalUrl = xhr.responseURL || url;
+        // 只缓存非空结果
+        resolve(finalUrl);
+      };
+
+      xhr.onerror = () => resolve(url);
+      xhr.ontimeout = () => resolve(url);
+      xhr.send();
+    } catch {
+      resolve(url);
     }
-    result += btoa(binary);
-  }
-  return result;
+  });
 }
 
 async function startTask(id: string) {
@@ -272,70 +307,108 @@ async function startTask(id: string) {
   speedSampler.set(id, { ts: Date.now(), bytes: 0 });
   notify(task);
 
+  // 解析 GitHub 重定向 URL → 最终 CDN URL
+  let downloadUrl = task.url;
+  if (GITHUB_URL_PATTERN.test(task.url)) {
+    downloadUrl = await resolveRedirectUrl(task.url);
+    if (downloadUrl !== task.url) {
+      console.log(`[DownloadManager] 重定向: ${task.url.substring(0, 50)}... → ${downloadUrl.substring(0, 50)}...`);
+    }
+  }
+
+  const progressCallback = (dp: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => {
+    const t = tasks.get(id);
+    if (!t || t.status !== 'downloading') return;
+
+    const { totalBytesWritten, totalBytesExpectedToWrite } = dp;
+    const now = Date.now();
+    const prev = speedSampler.get(id) ?? { ts: now, bytes: 0 };
+    const elapsed = (now - prev.ts) / 1000;
+
+    let speed = t.speed;
+    if (elapsed >= 0.5) {
+      const bytesDelta = totalBytesWritten - prev.bytes;
+      speed = elapsed > 0 ? Math.round(bytesDelta / elapsed) : 0;
+      speedSampler.set(id, { ts: now, bytes: totalBytesWritten });
+    }
+
+    t.bytesWritten = totalBytesWritten;
+    const hasTotal = totalBytesExpectedToWrite > 0;
+    if (hasTotal) {
+      t.totalBytes = totalBytesExpectedToWrite;
+      t.progress = totalBytesWritten / totalBytesExpectedToWrite;
+    } else {
+      t.progress = totalBytesWritten > 0 ? Math.min(0.99, 1 - 1 / (totalBytesWritten / 1024 + 1)) : 0;
+    }
+    t.speed = speed > 0 ? speed : 0;
+    t.eta = (speed > 0 && hasTotal)
+      ? Math.round((totalBytesExpectedToWrite - totalBytesWritten) / speed)
+      : -1;
+
+    notify(t);
+  };
+
+  // 使用 createDownloadResumable：原生下载，有进度回调，支持断点续传
+  const resumable = fs.createDownloadResumable(
+    downloadUrl,
+    localUri,
+    {},
+    progressCallback,
+    task.resumeData,
+  );
+  activeResumables.set(id, resumable);
+
   try {
-    // 用 fetch 下载：原生 HTTP 栈自动跟随 302→CDN，expo-file-system 的所有 HTTP 方法都不跟随
-    const response = await fetch(task.url, {
-      method: 'GET',
-      headers: { 'Cache-Control': 'no-cache' },
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const arrayBuffer = await response.arrayBuffer();
-    const uint8 = new Uint8Array(arrayBuffer);
-
-    if (uint8.byteLength === 0) {
-      throw new Error('下载内容为空');
-    }
-
-    // 检测 HTML 错误页面
-    if (uint8.byteLength < 1024) {
-      const header = new TextDecoder().decode(uint8.slice(0, Math.min(512, uint8.byteLength)));
-      if (header.trimStart().startsWith('<!') || header.trimStart().startsWith('<html')) {
-        throw new Error('服务器返回了网页而非文件，请重试');
-      }
-    }
-
-    // 分块 btoa 编码 → 写入磁盘
-    const base64 = uint8ToBase64Chunked(uint8);
-    await fs.writeAsStringAsync(localUri, base64, {
-      encoding: fs.EncodingType.Base64,
-    });
-
-    const actualSize = uint8.byteLength;
+    const result = await resumable.downloadAsync();
+    activeResumables.delete(id);
     speedSampler.delete(id);
 
     const t = tasks.get(id);
     if (!t) return;
 
+    if (!result) {
+      if (t.status !== 'paused' && t.status !== 'cancelled') {
+        t.status = 'failed';
+        t.error = '下载中断，请重试';
+        notify(t);
+      }
+      flushQueue();
+      return;
+    }
+
+    const validErr = await validateFile(result.uri, t.totalBytes);
+    if (validErr) {
+      t.status = 'failed'; t.error = validErr; notify(t);
+      await cleanupTempDir(id);
+      flushQueue(); return;
+    }
+
     t.status = 'completed';
     t.progress = 1;
     t.speed = 0;
     t.eta = 0;
-    t.bytesWritten = actualSize;
-    t.totalBytes = actualSize;
+    t.bytesWritten = t.totalBytes || t.bytesWritten;
     t.resumeData = undefined;
 
     if (Platform.OS === 'android') {
-      const { uri, safFailed } = await moveToSafDownloads(localUri, t.filename, actualSize);
+      const { uri, safFailed } = await moveToSafDownloads(result.uri, t.filename, t.totalBytes);
       t.localUri = uri;
       if (safFailed) {
         t.error = '文件保存在应用缓存目录（未授权公共存储权限）';
       }
       await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
     } else {
-      t.localUri = localUri;
+      t.localUri = result.uri;
     }
 
     notify(t);
     flushQueue();
   } catch (e: any) {
+    activeResumables.delete(id);
     speedSampler.delete(id);
 
     const t = tasks.get(id);
-    if (!t) { flushQueue(); return; }
+    if (!t || t.status === 'paused' || t.status === 'cancelled') { flushQueue(); return; }
 
     const msg: string = e?.message ?? '';
 
@@ -431,11 +504,22 @@ export function retry(oldId: string): string {
 export async function pause(id: string): Promise<void> {
   const task = tasks.get(id);
   if (!task || task.status !== 'downloading') return;
-  // downloadAsync 不支持暂停，直接标记为 paused
+
+  const resumable = activeResumables.get(id);
+  if (resumable) {
+    try {
+      const snapshot = await resumable.pauseAsync();
+      if (snapshot?.resumeData) {
+        task.resumeData = snapshot.resumeData;
+      }
+    } catch { /* pauseAsync 失败时丢弃 resumeData，下次从头下载 */ }
+    activeResumables.delete(id);
+  }
+
+  speedSampler.delete(id);
   task.status = 'paused';
   task.speed = 0;
   task.eta = -1;
-  speedSampler.delete(id);
   notify(task);
 }
 
@@ -451,6 +535,12 @@ export async function resume(id: string): Promise<void> {
 export async function cancel(id: string): Promise<void> {
   const task = tasks.get(id);
   if (!task) return;
+
+  const resumable = activeResumables.get(id);
+  if (resumable) {
+    try { await resumable.cancelAsync?.(); } catch { /* ignore */ }
+    activeResumables.delete(id);
+  }
 
   task.status = 'cancelled';
   speedSampler.delete(id);
@@ -491,15 +581,31 @@ export function clearFinished(): void {
 }
 
 export async function pauseAll(): Promise<void> {
-  for (const [, task] of tasks) {
-    if (task.status === 'downloading' || task.status === 'pending') {
+  const pausePromises: Promise<void>[] = [];
+  for (const [id, task] of tasks) {
+    if (task.status === 'downloading') {
+      const resumable = activeResumables.get(id);
+      if (resumable) {
+        pausePromises.push(
+          resumable.pauseAsync().then((s) => {
+            if (s?.resumeData) task.resumeData = s.resumeData;
+          }).catch(() => null)
+        );
+        activeResumables.delete(id);
+      }
+      speedSampler.delete(id);
       task.status = 'paused';
       task.speed = 0;
       task.eta = -1;
-      speedSampler.delete(task.id);
+      notify(task);
+    } else if (task.status === 'pending') {
+      task.status = 'paused';
+      task.speed = 0;
+      task.eta = -1;
       notify(task);
     }
   }
+  await Promise.all(pausePromises);
 }
 
 export function resumeAll(): void {
@@ -515,9 +621,12 @@ export function resumeAll(): void {
 
 export function clearAllTasks(): void {
   for (const [id] of tasks.entries()) {
+    const resumable = activeResumables.get(id);
+    if (resumable) resumable.cancelAsync?.().catch(() => null);
     cleanupTempDir(id);
   }
   tasks.clear();
+  activeResumables.clear();
   speedSampler.clear();
   notifyRefresh();
 }
