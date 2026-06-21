@@ -92,17 +92,6 @@ async function moveToSafDownloads(tempUri: string, filename: string): Promise<st
   } catch { return tempUri; }
 }
 
-// ─── 预解析 302 跳转 URL（GitHub releases 均为 302 → objects.githubusercontent.com）──
-async function resolveRedirectUrl(url: string): Promise<string> {
-  try {
-    // 用 fetch HEAD 请求跟随跳转，取最终 URL
-    const res = await fetch(url, { method: 'HEAD', redirect: 'follow' });
-    if (res.url && res.url !== url) return res.url;
-    return url;
-  } catch {
-    return url; // 解析失败降级用原 URL
-  }
-}
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
 export function getMimeType(filename: string): string {
   const lower = filename.toLowerCase();
@@ -240,10 +229,6 @@ async function startTask(id: string) {
   speedSampler.set(id, { ts: Date.now(), bytes: 0 });
   notify(task);
 
-  // 预解析 302 跳转（GitHub releases → objects.githubusercontent.com）
-  // 避免 expo-file-system 无法处理重定向链导致卡在 0%
-  const resolvedUrl = await resolveRedirectUrl(task.url);
-
   const progressCallback = (dp: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => {
     const t = tasks.get(id);
     if (!t || t.status !== 'downloading') return;
@@ -275,10 +260,9 @@ async function startTask(id: string) {
     notify(t);
   };
 
-  // 使用 resumeData（暂停后恢复）或直接下载（使用预解析的最终 URL）
-  const downloadUrl = task.resumeData ? task.url : resolvedUrl;
+  // expo-file-system 原生层自动跟随 302（GitHub releases 直接传原始 URL）
   const resumable = fs.createDownloadResumable(
-    downloadUrl,
+    task.url,
     localUri,
     {},
     progressCallback,
