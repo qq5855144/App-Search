@@ -146,56 +146,57 @@ export default function ProfileTab() {
   const [updateAssets, setUpdateAssets] = useState<{ name: string; url: string; size: number }[]>([]);
 
   /**
-   * 检测更新核心逻辑（可靠方案）：
-   * 1. 从 GitHub Actions API 获取最新成功构建的 run_number
-   * 2. 与本地 nativeBuildVersion（= CI run_number，由构建脚本写入 versionCode）比对
-   * 3. 本地 >= 云端 → 已是最新；否则 → 有新版本可下载
-   * 不依赖 AsyncStorage / 文件名 / tag 字符串，彻底解决误报问题
+   * 检测更新核心逻辑（最终方案）：
+   * 直接从 release asset 文件名提取版本号，与本地 nativeApplicationVersion 对比
+   *
+   * APK 命名规则（CI 保证）：openappstore.{version}.apk，如 openappstore.1.0.475.apk
+   * - 只有发布新 APK 时文件名才变化，代码 push 触发的新构建不影响判断
+   * - 不依赖 Actions run_number（run_number 随每次代码 push 递增，导致误报）
+   * - 不依赖 AsyncStorage（首次安装也能正确判断）
    */
   const checkAppUpdate = async () => {
     setUpdateCheck('checking');
     setLatestVersion(null);
     setUpdateAssets([]);
     try {
-      // ── 并行拉取 release assets 和最新构建 run_number ──────
-      const [releases, runsResp] = await Promise.all([
-        fetchReleases('qq5855144', 'App-Search', 1, true),
-        fetch(
-          'https://api.github.com/repos/qq5855144/App-Search/actions/workflows/build-android.yml/runs?status=success&per_page=1',
-          { headers: { Accept: 'application/vnd.github+json' } },
-        ).then((r) => r.json()).catch(() => null),
-      ]);
-
+      const releases = await fetchReleases('qq5855144', 'App-Search', 1, true);
       if (!releases.length) { setUpdateCheck('error'); return; }
       const release = releases[0];
       const installable = filterInstallAssets(release.assets);
 
-      // 最新云端 run_number（= CI 构建号，与 versionCode/version 中的 N 一致）
-      const latestRunNumber: number = runsResp?.workflow_runs?.[0]?.run_number ?? 0;
-
-      // 本地安装版本的构建号
-      // 优先从 nativeApplicationVersion（"1.0.472"）末位提取，因为 CI 版本格式固定为 1.0.{run_number}
-      // nativeBuildVersion 在 Android 上有时返回 null，不可靠
-      const appVerStr = Constants.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '1.0.0';
-      const localBuild = parseInt(appVerStr.split('.').pop() ?? '0', 10);
-
-      // 展示标签：用发布日期（release name 中含日期）或构建号
-      const releaseName: string = runsResp?.workflow_runs?.[0]?.created_at ?? '';
-      const displayTag = latestRunNumber > 0
-        ? `v1.0.${latestRunNumber}`
-        : (release.tag_name !== 'latest' ? release.tag_name : new Date(releaseName).toLocaleDateString('zh-CN'));
-      setLatestVersion(displayTag.replace(/^v/i, ''));
       setUpdateAssets(installable.map((a) => ({
         name: a.name,
         url: a.browser_download_url,
         size: a.size,
       })));
 
-      // 核心判断：本地构建号 >= 最新云端构建号 → 已是最新
-      const isLatest = latestRunNumber > 0
-        ? localBuild >= latestRunNumber
-        : false; // 无法获取 run_number 时保守显示"有更新"
-      setUpdateCheck(isLatest ? 'latest' : 'update_available');
+      // 从 APK 文件名提取版本号：openappstore.1.0.475.apk → "1.0.475"
+      // 兼容旧命名（openappstore-YYYYMMDD-SHA.apk）和无资产情况
+      let releaseVersion: string | null = null;
+      for (const a of installable) {
+        // 新格式：openappstore.{semver}.apk
+        const m = a.name.match(/openappstore\.(\d+\.\d+\.\d+)\.apk/i);
+        if (m) { releaseVersion = m[1]; break; }
+      }
+
+      // 本地已安装版本（运行时固定，由 CI 写入 app.json）
+      const localVer = Constants.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '1.0.0';
+
+      if (releaseVersion) {
+        setLatestVersion(releaseVersion);
+        // 比较 patch 号（版本格式固定为 1.0.N）
+        const localN = parseInt(localVer.split('.').pop() ?? '0', 10);
+        const remoteN = parseInt(releaseVersion.split('.').pop() ?? '0', 10);
+        setUpdateCheck(localN >= remoteN ? 'latest' : 'update_available');
+      } else {
+        // 无法从文件名提取版本：fallback 显示发布日期
+        const displayTag = release.tag_name !== 'latest'
+          ? release.tag_name.replace(/^v/i, '')
+          : (release.published_at?.slice(0, 10).replace(/-/g, '/') ?? 'latest');
+        setLatestVersion(displayTag);
+        // 保守判断：有可安装包且本地版本无法比对时提示更新
+        setUpdateCheck(installable.length > 0 ? 'update_available' : 'latest');
+      }
     } catch {
       setUpdateCheck('error');
     }
