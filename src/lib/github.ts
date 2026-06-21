@@ -459,11 +459,13 @@ export async function fetchReleases(owner: string, repo: string, page = 1, bypas
     })),
   }))
 
-  const data = await callEdgeFunction({
-    action: 'releases',
-    params: { owner, repo, page },
-    token: cachedToken,
-  })
+  const data = bypassCache
+    ? null // bypassCache 时跳过 Edge Function（它有独立缓存），直接走 GitHub API
+    : await callEdgeFunction({
+        action: 'releases',
+        params: { owner, repo, page },
+        token: cachedToken,
+      })
   const list = data?.data ?? null
   let result: GitHubRelease[]
   if (Array.isArray(list)) {

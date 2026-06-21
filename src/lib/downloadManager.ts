@@ -1,8 +1,8 @@
 /**
- * 下载管理器 v6 — 健壮性增强版
+ * 下载管理器 v7 — 重定向预解析 + 健壮性增强
  *
  * 设计决策：
- * 1. 直接下载：不做 HEAD URL 解析（GitHub 302 由 Android 原生 HTTP 客户端透明跟随）
+ * 1. GitHub 重定向预解析：GitHub release asset URL 返回 302，先 HEAD 拿到最终 CDN URL
  * 2. 单线程：移除分片并行（大文件 Base64 合并导致 OOM，且收益有限）
  * 3. 暂停续传：pauseAsync() 保存 resumeData，resume 时带 resumeData 重建 Resumable
  * 4. 进度回调：移除节流门，每次回调都 notify，由 Context 防抖 150ms 控制渲染频率
@@ -224,6 +224,49 @@ async function cleanupTempDir(id: string) {
   await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
 }
 
+// ─── GitHub 重定向预解析 ────────────────────────────────────────────────────────
+
+/** GitHub release 下载 URL 模式 */
+const GITHUB_DOWNLOAD_PATTERN = /^https?:\/\/github\.com\/[^/]+\/[^/]+\/releases\/download\//;
+const GITHUB_API_ASSET_PATTERN = /^https?:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases\/assets\//;
+
+/** 解析过的重定向 URL 缓存（内存中，避免重复 HEAD 请求） */
+const _redirectCache = new Map<string, string>();
+
+/**
+ * 预解析 GitHub 下载 URL 的重定向目标。
+ * GitHub release asset URL 返回 302 重定向到 CDN，
+ * expo-file-system 的 createDownloadResumable 不跟随重定向导致下载空文件。
+ * 此函数通过 fetch 跟随重定向链，返回最终的目标 URL。
+ */
+async function resolveRedirectUrl(url: string): Promise<string> {
+  // 非 GitHub URL 直接返回原 URL
+  if (!GITHUB_DOWNLOAD_PATTERN.test(url) && !GITHUB_API_ASSET_PATTERN.test(url)) {
+    return url;
+  }
+
+  // 检查缓存
+  const cached = _redirectCache.get(url);
+  if (cached) return cached;
+
+  try {
+    const res = await fetch(url, {
+      method: 'HEAD',
+      redirect: 'follow',
+      // 不设 headers，让浏览器/原生层自动处理
+    });
+    const finalUrl = res.url || url;
+    // 缓存解析结果（同一 URL 的重定向目标在短时间内不变）
+    _redirectCache.set(url, finalUrl);
+    console.log(`[DownloadManager] 重定向解析: ${url.substring(0, 60)}... → ${finalUrl.substring(0, 60)}...`);
+    return finalUrl;
+  } catch {
+    // 解析失败时回退到原 URL，让下载管理器自行处理
+    console.warn('[DownloadManager] 重定向解析失败，使用原 URL');
+    return url;
+  }
+}
+
 // ─── 核心下载逻辑 ─────────────────────────────────────────────────────────────
 async function startTask(id: string) {
   const task = tasks.get(id);
@@ -252,6 +295,12 @@ async function startTask(id: string) {
   task.error = null;
   speedSampler.set(id, { ts: Date.now(), bytes: 0 });
   notify(task);
+
+  // 预解析 GitHub 重定向 URL，避免 expo-file-system 下载空文件
+  const downloadUrl = await resolveRedirectUrl(task.url);
+  if (downloadUrl !== task.url) {
+    task.url = downloadUrl; // 更新为解析后的 URL
+  }
 
   const progressCallback = (dp: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => {
     const t = tasks.get(id);
@@ -290,7 +339,7 @@ async function startTask(id: string) {
 
   // 使用 resumeData（暂停后恢复）或直接下载
   const resumable = fs.createDownloadResumable(
-    task.url,
+    downloadUrl,
     localUri,
     {},
     progressCallback,
