@@ -267,13 +267,14 @@ export async function upsertInstalledApp(app: Omit<InstalledApp, 'id' | 'latest_
       ignored_version: idx >= 0 ? list[idx].ignored_version : null,
       last_checked: idx >= 0 ? list[idx].last_checked : null,
       ...app,
+      installed_at: app.installed_at, // 始终使用传入的安装时间
     };
     if (idx >= 0) list[idx] = record; else list.unshift(record);
     webSet('oas_installed', list);
     return;
   }
   const db = await initDb();
-  // INSERT OR REPLACE 会丢失 ignored_version/latest_version，用 INSERT … ON CONFLICT UPDATE
+  // INSERT … ON CONFLICT UPDATE：重复安装时更新 installed_version 和 installed_at
   await db.runAsync(
     `INSERT INTO installed_apps (id, app_id, app_name, owner, repo, avatar_url, installed_version, installed_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -311,6 +312,42 @@ export async function updateInstalledLatest(
   );
 }
 
+/** 批量更新多个已安装应用的最新版本信息 */
+export async function batchUpdateInstalledLatest(
+  updates: Array<{ appId: number; latestVersion: string }>,
+): Promise<void> {
+  if (updates.length === 0) return;
+  if (IS_WEB) {
+    const list = webGet<InstalledApp[]>('oas_installed', []);
+    const now = new Date().toISOString();
+    for (const { appId, latestVersion } of updates) {
+      const idx = list.findIndex((a) => a.app_id === appId);
+      if (idx >= 0) {
+        list[idx].latest_version = latestVersion;
+        list[idx].last_checked = now;
+      }
+    }
+    webSet('oas_installed', list);
+    return;
+  }
+  const db = await initDb();
+  const now = new Date().toISOString();
+  const stmt = await db.prepareAsync?.(
+    'UPDATE installed_apps SET latest_version = ?, last_checked = ? WHERE app_id = ?'
+  );
+  for (const { appId, latestVersion } of updates) {
+    if (stmt) {
+      await stmt.executeAsync?.([latestVersion, now, appId])?.catch(() => {});
+    } else {
+      await db.runAsync(
+        'UPDATE installed_apps SET latest_version = ?, last_checked = ? WHERE app_id = ?',
+        [latestVersion, now, appId],
+      );
+    }
+  }
+  if (stmt?.finalizeAsync) await stmt.finalizeAsync().catch(() => {});
+}
+
 export async function ignoreInstalledUpdate(appId: number, version: string): Promise<void> {
   if (IS_WEB) {
     const list = webGet<InstalledApp[]>('oas_installed', []);
@@ -321,6 +358,18 @@ export async function ignoreInstalledUpdate(appId: number, version: string): Pro
   }
   const db = await initDb();
   await db.runAsync('UPDATE installed_apps SET ignored_version = ? WHERE app_id = ?', [version, appId]);
+}
+
+/** 获取需要提示更新的应用列表（latest_version ≠ installed_version 且未忽略） */
+export async function getUpdatableApps(): Promise<InstalledApp[]> {
+  const all = await getInstalledApps();
+  return all.filter((app) => {
+    if (!app.latest_version || !app.installed_version) return false;
+    // 版本相同或已忽略则跳过
+    if (app.latest_version === app.installed_version) return false;
+    if (app.ignored_version === app.latest_version) return false;
+    return true;
+  });
 }
 
 export async function removeInstalledApp(appId: number): Promise<void> {

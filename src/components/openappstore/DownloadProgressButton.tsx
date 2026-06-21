@@ -98,17 +98,16 @@ export default function DownloadProgressButton({
       !autoInstallFiredRef.current
     ) {
       autoInstallFiredRef.current = true;
-      // 验证 localUri 可访问
-      const fs = (() => { try { return require('expo-file-system'); } catch { return null; } })();
-      if (fs) {
-        fs.getInfoAsync(task.localUri).then((info: any) => {
+      // 验证 localUri 可访问（动态 import 避免 Hermes 同步 require 问题）
+      import('expo-file-system').then((fs) => {
+        fs.getInfoAsync(task.localUri!).then((info: any) => {
           if (info.exists) {
             openLocalFile(task.localUri!, filename).then(({ ok, error }) => {
               if (!ok && error) setOpenError(error);
             });
           }
         }).catch(() => {});
-      }
+      }).catch(() => {});
     }
   }, [status, task?.localUri, filename]);
 

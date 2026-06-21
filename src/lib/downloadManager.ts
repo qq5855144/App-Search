@@ -85,9 +85,17 @@ async function moveToSafDownloads(tempUri: string, filename: string, expectedSiz
     const dirUri = await loadSafUri();
     if (!dirUri) return { uri: tempUri, safFailed: false };
 
-    // 大文件保护：超过 50MB 不通过 Base64 转换，直接保留在缓存目录
-    if (expectedSize > SAF_BASE64_MAX_SIZE) {
-      console.warn(`[DownloadManager] 文件 ${filename} (${(expectedSize / 1024 / 1024).toFixed(1)}MB) 超过 SAF Base64 限制，保留在缓存目录`);
+    // 大文件保护：先获取实际文件大小（expectedSize 可能为 0 或未提供）
+    let actualSize = expectedSize;
+    if (actualSize <= 0) {
+      try {
+        const info = await fs.getInfoAsync(tempUri);
+        actualSize = (info as any).size ?? 0;
+      } catch { /* 无法获取大小，使用 expectedSize */ }
+    }
+
+    if (actualSize > SAF_BASE64_MAX_SIZE) {
+      console.warn(`[DownloadManager] 文件 ${filename} (${(actualSize / 1024 / 1024).toFixed(1)}MB) 超过 SAF Base64 限制，保留在缓存目录`);
       return { uri: tempUri, safFailed: true };
     }
 
@@ -425,10 +433,20 @@ export function enqueue(params: {
   url: string; filename: string; appId: number; appName: string;
   owner: string; repo: string; avatarUrl: string; version: string;
 }): string {
+  // 校验 URL 有效性
+  if (!params.url || typeof params.url !== 'string' || !params.url.startsWith('http')) {
+    throw new Error('下载链接无效');
+  }
   // 检查是否已有相同 URL 的活跃任务
   const existing = findTaskByUrl(params.url);
   if (existing && ['pending', 'downloading', 'paused'].includes(existing.status)) {
     return existing.id;
+  }
+  // 检查是否已完成/失败的同 URL 任务，提示清除旧记录
+  if (existing && ['completed', 'failed'].includes(existing.status)) {
+    // 删除旧任务记录，允许重新下载
+    tasks.delete(existing.id);
+    speedSampler.delete(existing.id);
   }
 
   const id = genId();
@@ -517,8 +535,9 @@ export async function cancel(id: string): Promise<void> {
 
   await cleanupTempDir(id);
 
-  tasks.delete(id);
+  // 先 notify 再删除，确保 Context 能收到状态变更
   notify(task);
+  tasks.delete(id);
   flushQueue();
 }
 

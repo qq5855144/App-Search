@@ -477,29 +477,34 @@ export default function DetailScreen() {
                                   return;
                                 }
                                 // 加入 App 内下载队列（不跳浏览器）
-                                addDownloadRecord({
-                                  app_id: app.id,
-                                  app_name: app.name,
-                                  owner: owner ?? '',
-                                  repo: repo ?? '',
-                                  avatar_url: app.avatar_url,
-                                  version: rel.tag_name,
-                                  download_time: new Date().toISOString(),
-                                  file_size: asset.size,
-                                  html_url: asset.browser_download_url,
-                                }).catch(() => {});
-                                addAppEvent({ event_type: 'download', app_id: app.id, app_name: app.name, owner: owner ?? '', repo: repo ?? '', avatar_url: app.avatar_url ?? '' }).catch(() => {});
-                                await enqueue({
-                                  url: asset.browser_download_url,
-                                  filename: asset.name,
-                                  appId: app.id,
-                                  appName: app.name,
-                                  owner: owner ?? '',
-                                  repo: repo ?? '',
-                                  avatarUrl: app.avatar_url ?? '',
-                                  version: rel.tag_name,
-                                });
-                                router.push('/downloads' as any);
+                                try {
+                                  addDownloadRecord({
+                                    app_id: app.id,
+                                    app_name: app.name,
+                                    owner: owner ?? '',
+                                    repo: repo ?? '',
+                                    avatar_url: app.avatar_url,
+                                    version: rel.tag_name,
+                                    download_time: new Date().toISOString(),
+                                    file_size: asset.size,
+                                    html_url: asset.browser_download_url,
+                                  }).catch(() => {});
+                                  addAppEvent({ event_type: 'download', app_id: app.id, app_name: app.name, owner: owner ?? '', repo: repo ?? '', avatar_url: app.avatar_url ?? '' }).catch(() => {});
+                                  await enqueue({
+                                    url: asset.browser_download_url,
+                                    filename: asset.name,
+                                    appId: app.id,
+                                    appName: app.name,
+                                    owner: owner ?? '',
+                                    repo: repo ?? '',
+                                    avatarUrl: app.avatar_url ?? '',
+                                    version: rel.tag_name,
+                                  });
+                                  router.push('/downloads' as any);
+                                } catch (e: any) {
+                                  // 下载链接无效时不跳转，错误已在 enqueue 中抛出
+                                  console.warn('[Detail] 下载失败:', e?.message);
+                                }
                               }}
                               style={{ paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20,
                                 borderWidth: 1.5, borderColor: '#1677FF' }}>
