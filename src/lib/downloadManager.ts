@@ -1,61 +1,26 @@
 /**
- * 下载管理器 v7
+ * 下载管理器 v6 — 健壮性增强版
  *
  * 设计决策：
- * 1. redirect 预解析：GitHub release asset URL 返回 302，预先 HEAD 拿到最终 CDN URL
- * 2. 弱网自动重试：网络错误/超时最多重试 3 次，指数退避（2s/4s/8s）
- * 3. 卡顿检测：30s 无进度字节增量视为卡顿，自动取消并重试
- * 4. 暂停续传：pauseAsync() 保存 resumeData，resume 时带 resumeData 重建 Resumable
- * 5. 进度回调：每次回调都 notify，由 Context 防抖 150ms 控制渲染频率
- * 6. SAF 保存：Android 完成后写入公共 Downloads（静态导入 expo-file-system/legacy）
+ * 1. 直接下载：不做 HEAD URL 解析（GitHub 302 由 Android 原生 HTTP 客户端透明跟随）
+ * 2. 单线程：移除分片并行（大文件 Base64 合并导致 OOM，且收益有限）
+ * 3. 暂停续传：pauseAsync() 保存 resumeData，resume 时带 resumeData 重建 Resumable
+ * 4. 进度回调：移除节流门，每次回调都 notify，由 Context 防抖 150ms 控制渲染频率
+ * 5. SAF 保存：Android 完成后写入公共 Downloads（静态导入 expo-file-system/legacy）
+ * 6. 大文件保护：SAF 移动前检查文件大小，超过 50MB 跳过 Base64 转换避免 OOM
+ * 7. 自动重试：临时网络错误自动重试 1 次
  */
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as _FileSystem from 'expo-file-system/legacy';
 
 const IS_WEB = Platform.OS === 'web';
-const APP_FOLDER_NAME = '开源应用商店';
-const MAX_RETRIES = 3;           // 弱网最多重试次数
-const STALL_TIMEOUT_MS = 30_000; // 30s 无进度视为卡顿
-const RETRY_BASE_DELAY_MS = 2000; // 指数退避基础延迟
-
-/**
- * 解析重定向 URL：GitHub release asset 下载链接会 302 跳转到 CDN
- * expo-file-system 某些版本跟随后得到 0B 文件，预先解析最终 URL 可规避此问题
- */
-async function resolveRedirectUrl(url: string): Promise<string> {
-  if (IS_WEB) return url;
-  try {
-    const resp = await fetch(url, { method: 'HEAD', redirect: 'follow' });
-    // fetch 跟随重定向后 resp.url 就是最终 CDN 地址
-    if (resp.url && resp.url !== url) return resp.url;
-  } catch {
-    // 解析失败则降级使用原始 URL
-  }
-  return url;
-}
-
-/** 等待指定毫秒（用于重试退避） */
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-/** 判断是否为可重试的网络错误 */
-function isRetryableError(msg: string): boolean {
-  return (
-    msg.includes('Network request failed') ||
-    msg.includes('Unable to resolve host') ||
-    msg.includes('timeout') ||
-    msg.includes('ETIMEDOUT') ||
-    msg.includes('ECONNRESET') ||
-    msg.includes('ECONNABORTED') ||
-    msg.includes('socket hang up')
-  );
-}
 const SAF_URI_KEY = '@openappstore/saf_downloads_uri';
 const MAX_CONCURRENT = 3;
-/** 断点续传：持久化 paused/pending 任务到 AsyncStorage，App 重启后可恢复 */
-const TASKS_PERSIST_KEY = '@openappstore/pending_tasks_v2';
+/** SAF Base64 移动的最大文件大小（50MB），超过则保留在缓存目录避免 OOM */
+const SAF_BASE64_MAX_SIZE = 50 * 1024 * 1024;
+/** 自动重试次数 */
+const MAX_AUTO_RETRY = 1;
 
 function getFS(): typeof _FileSystem | null {
   return IS_WEB ? null : _FileSystem;
@@ -93,7 +58,6 @@ export async function requestDownloadsPermission(): Promise<boolean> {
       'content://com.android.externalstorage.documents/tree/primary%3ADownload'
     );
     if (!result.granted) return false;
-    // 直接使用用户选择的目录，不再创建子文件夹
     _safDirUri = result.directoryUri;
     await AsyncStorage.setItem(SAF_URI_KEY, result.directoryUri).catch(() => null);
     return true;
@@ -110,24 +74,36 @@ export async function hasDownloadsPermission(): Promise<boolean> {
   return (await loadSafUri()) !== null;
 }
 
-async function moveToSafDownloads(tempUri: string, filename: string): Promise<string> {
+/**
+ * 将下载完成的文件移动到 SAF 公共 Downloads 目录。
+ * 小文件（≤50MB）使用 Base64 跨协议复制；大文件保留在缓存目录避免 OOM。
+ */
+async function moveToSafDownloads(tempUri: string, filename: string, expectedSize: number): Promise<{ uri: string; safFailed: boolean }> {
   const fs = getFS();
-  if (!fs) return tempUri;
+  if (!fs) return { uri: tempUri, safFailed: false };
   try {
     const dirUri = await loadSafUri();
-    if (!dirUri) return tempUri;
-    // 创建 SAF 目标文件
+    if (!dirUri) return { uri: tempUri, safFailed: false };
+
+    // 大文件保护：超过 50MB 不通过 Base64 转换，直接保留在缓存目录
+    if (expectedSize > SAF_BASE64_MAX_SIZE) {
+      console.warn(`[DownloadManager] 文件 ${filename} (${(expectedSize / 1024 / 1024).toFixed(1)}MB) 超过 SAF Base64 限制，保留在缓存目录`);
+      return { uri: tempUri, safFailed: true };
+    }
+
     const destUri = await fs.StorageAccessFramework.createFileAsync(
       dirUri, filename, getMimeType(filename)
     );
-    // 使用 Base64 读写代替 copyAsync（copyAsync 不支持 file:// → content:// 跨协议复制）
     const base64 = await fs.readAsStringAsync(tempUri, { encoding: fs.EncodingType.Base64 });
     await fs.StorageAccessFramework.writeAsStringAsync(destUri, base64, {
       encoding: fs.EncodingType.Base64,
     });
     await fs.deleteAsync(tempUri, { idempotent: true }).catch(() => null);
-    return destUri;
-  } catch { return tempUri; }
+    return { uri: destUri, safFailed: false };
+  } catch (e) {
+    console.warn('[DownloadManager] SAF 移动失败:', (e as Error)?.message);
+    return { uri: tempUri, safFailed: true };
+  }
 }
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
@@ -151,7 +127,7 @@ export function isInstallerFile(filename: string): boolean {
 }
 
 export function formatSpeed(bytesPerSec: number): string {
-  if (bytesPerSec <= 0) return '';
+  if (!bytesPerSec || bytesPerSec <= 0) return '';
   if (bytesPerSec < 1024) return `${bytesPerSec} B/s`;
   if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
   return `${(bytesPerSec / 1024 / 1024).toFixed(2)} MB/s`;
@@ -189,9 +165,14 @@ export interface DownloadTask {
   createdAt: number;
   /** pauseAsync() 返回的恢复数据，resume 时传给 createDownloadResumable */
   resumeData?: string;
+  /** 自动重试计数 */
+  _autoRetryCount?: number;
 }
 
-type ProgressCallback = (task: DownloadTask) => void;
+/** 全局刷新事件类型：替代 __refresh__ 魔法字符串 */
+export const REFRESH_EVENT = Symbol('download_refresh');
+
+type ProgressCallback = (task: DownloadTask | { id: typeof REFRESH_EVENT }) => void;
 
 // ─── 全局状态 ─────────────────────────────────────────────────────────────────
 const tasks = new Map<string, DownloadTask>();
@@ -203,42 +184,7 @@ const speedSampler = new Map<string, { ts: number; bytes: number }>();
 
 function genId(): string { return `dl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`; }
 function notify(task: DownloadTask) { subscribers.forEach((cb) => cb({ ...task })); }
-
-// ─── 断点续传持久化 ─────────────────────────────────────────────────────────────
-/** 将 paused/pending 状态的任务写入 AsyncStorage */
-function persistPausedTasks() {
-  if (IS_WEB) return;
-  const toSave = [...tasks.values()].filter(
-    (t) => t.status === 'paused' || t.status === 'pending',
-  );
-  AsyncStorage.setItem(TASKS_PERSIST_KEY, JSON.stringify(toSave)).catch(() => {});
-}
-
-/** 切后台时调用：持久化所有活跃任务快照（含正在下载），用于 App 被杀后恢复断点 */
-export function persistCurrentTasks(): void {
-  if (IS_WEB) return;
-  const toSave = [...tasks.values()].filter(
-    (t) => ['paused', 'pending', 'downloading'].includes(t.status),
-  );
-  AsyncStorage.setItem(TASKS_PERSIST_KEY, JSON.stringify(toSave)).catch(() => {});
-}
-
-/** App 启动时从 AsyncStorage 恢复断点任务（作为 paused 状态，用户手动 resume） */
-export async function restorePersistedTasks(): Promise<void> {
-  if (IS_WEB) return;
-  try {
-    const raw = await AsyncStorage.getItem(TASKS_PERSIST_KEY);
-    if (!raw) return;
-    const saved: DownloadTask[] = JSON.parse(raw);
-    for (const t of saved) {
-      if (!tasks.has(t.id)) {
-        // 统一恢复为 paused，让用户手动决定是否续传
-        tasks.set(t.id, { ...t, status: 'paused', speed: 0, eta: -1 });
-      }
-    }
-    subscribers.forEach((cb) => cb({ id: '__refresh__' } as any));
-  } catch { /* ignore */ }
-}
+function notifyRefresh() { subscribers.forEach((cb) => cb({ id: REFRESH_EVENT })); }
 
 function flushQueue() {
   const active = [...tasks.values()].filter((t) => t.status === 'downloading').length;
@@ -247,8 +193,31 @@ function flushQueue() {
   if (next) startTask(next.id);
 }
 
+/** 判断是否为可自动重试的临时错误 */
+function isTransientError(msg: string): boolean {
+  return (
+    msg.includes('Network request failed') ||
+    msg.includes('Unable to resolve host') ||
+    msg.includes('timeout') ||
+    msg.includes('ETIMEDOUT') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('ECONNREFUSED') ||
+    msg.includes('ENOTFOUND') ||
+    msg.includes('socket hang up')
+  );
+}
+
+/** 清理临时下载目录 */
+async function cleanupTempDir(id: string) {
+  if (IS_WEB) return;
+  const fs = getFS();
+  if (!fs) return;
+  const tempDir = `${fs.documentDirectory ?? ''}dl_${id}/`;
+  await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
+}
+
 // ─── 核心下载逻辑 ─────────────────────────────────────────────────────────────
-async function startTask(id: string, retryCount = 0) {
+async function startTask(id: string) {
   const task = tasks.get(id);
   if (!task) return;
 
@@ -264,7 +233,7 @@ async function startTask(id: string, retryCount = 0) {
   }
 
   const fs = getFS();
-  if (!fs) { task.status = 'failed'; task.error = '文件系统不可用'; notify(task); return; }
+  if (!fs) { task.status = 'failed'; task.error = '文件系统不可用'; notify(task); flushQueue(); return; }
 
   const tempDir = `${fs.documentDirectory ?? ''}dl_${id}/`;
   const localUri = `${tempDir}${task.filename}`;
@@ -273,31 +242,8 @@ async function startTask(id: string, retryCount = 0) {
 
   task.status = 'downloading';
   task.error = null;
-  if (retryCount > 0) {
-    // 重试时保留已下载字节数，提示用户正在重试
-    task.error = null;
-  }
-  speedSampler.set(id, { ts: Date.now(), bytes: task.bytesWritten ?? 0 });
+  speedSampler.set(id, { ts: Date.now(), bytes: 0 });
   notify(task);
-
-  // ── 卡顿检测：30s 无进度字节增量 → 取消当前下载并触发重试 ──────────────
-  let lastStallBytes = task.bytesWritten ?? 0;
-  let lastStallTs = Date.now();
-  let stallDetected = false;
-  const stallTimer = setInterval(() => {
-    const t = tasks.get(id);
-    if (!t || t.status !== 'downloading') { clearInterval(stallTimer); return; }
-    const now = Date.now();
-    if ((t.bytesWritten ?? 0) > lastStallBytes) {
-      lastStallBytes = t.bytesWritten ?? 0;
-      lastStallTs = now;
-    } else if (now - lastStallTs >= STALL_TIMEOUT_MS) {
-      clearInterval(stallTimer);
-      stallDetected = true;
-      const resumable = activeResumables.get(id);
-      if (resumable) resumable.cancelAsync().catch(() => {});
-    }
-  }, 5000);
 
   const progressCallback = (dp: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => {
     const t = tasks.get(id);
@@ -311,30 +257,32 @@ async function startTask(id: string, retryCount = 0) {
     // 速度计算（每 500ms 重置一次采样窗口，避免速度跳跃）
     let speed = t.speed;
     if (elapsed >= 0.5) {
-      speed = Math.round((totalBytesWritten - prev.bytes) / elapsed);
+      const bytesDelta = totalBytesWritten - prev.bytes;
+      speed = elapsed > 0 ? Math.round(bytesDelta / elapsed) : 0;
       speedSampler.set(id, { ts: now, bytes: totalBytesWritten });
     }
 
     t.bytesWritten = totalBytesWritten;
-    // totalBytesExpectedToWrite=-1 表示服务端未返回 Content-Length，保留已知值
-    if (totalBytesExpectedToWrite > 0) {
+    // 处理 totalBytesExpectedToWrite 为 -1（服务器未返回 Content-Length）的情况
+    const hasTotal = totalBytesExpectedToWrite > 0;
+    if (hasTotal) {
       t.totalBytes = totalBytesExpectedToWrite;
+      t.progress = totalBytesWritten / totalBytesExpectedToWrite;
+    } else {
+      // 未知总大小：基于已下载字节数显示伪进度（下载量本身）
+      t.progress = totalBytesWritten > 0 ? Math.min(0.99, 1 - 1 / (totalBytesWritten / 1024 + 1)) : 0;
     }
-    // totalBytes=0 时（未知大小）进度设为 -1（UI 显示不定进度条），已知大小则正常计算
-    t.progress = t.totalBytes > 0 ? totalBytesWritten / t.totalBytes : -1;
     t.speed = speed > 0 ? speed : 0;
-    t.eta = (speed > 0 && t.totalBytes > 0)
-      ? Math.round((t.totalBytes - totalBytesWritten) / speed)
+    t.eta = (speed > 0 && hasTotal)
+      ? Math.round((totalBytesExpectedToWrite - totalBytesWritten) / speed)
       : -1;
 
     notify(t);
   };
 
-  // 预解析重定向 URL，避免 GitHub 302 跳转导致 0B 下载
-  const resolvedUrl = await resolveRedirectUrl(task.url);
-
+  // 使用 resumeData（暂停后恢复）或直接下载
   const resumable = fs.createDownloadResumable(
-    resolvedUrl,
+    task.url,
     localUri,
     {},
     progressCallback,
@@ -344,28 +292,11 @@ async function startTask(id: string, retryCount = 0) {
 
   try {
     const result = await resumable.downloadAsync();
-    clearInterval(stallTimer);
     activeResumables.delete(id);
     speedSampler.delete(id);
 
     const t = tasks.get(id);
     if (!t) return;
-
-    // 卡顿取消后自动重试
-    if (stallDetected || (!result && t.status === 'downloading')) {
-      if (retryCount < MAX_RETRIES) {
-        t.error = `网络卡顿，正在重试（${retryCount + 1}/${MAX_RETRIES}）…`;
-        t.status = 'downloading';
-        notify(t);
-        await sleep(RETRY_BASE_DELAY_MS * Math.pow(2, retryCount));
-        return startTask(id, retryCount + 1);
-      }
-      t.status = 'failed';
-      t.error = '网络持续不稳定，请稍后手动重试';
-      notify(t);
-      flushQueue();
-      return;
-    }
 
     // 暂停/取消时 downloadAsync 返回 undefined
     if (!result) {
@@ -378,10 +309,11 @@ async function startTask(id: string, retryCount = 0) {
       return;
     }
 
-    // 校验文件
-    const validErr = await validateFile(result.uri);
+    // 校验文件（传入预期大小）
+    const validErr = await validateFile(result.uri, t.totalBytes);
     if (validErr) {
       t.status = 'failed'; t.error = validErr; notify(t);
+      await cleanupTempDir(id);
       flushQueue(); return;
     }
 
@@ -394,7 +326,12 @@ async function startTask(id: string, retryCount = 0) {
     t.resumeData = undefined;
 
     if (Platform.OS === 'android') {
-      t.localUri = await moveToSafDownloads(result.uri, t.filename);
+      const { uri, safFailed } = await moveToSafDownloads(result.uri, t.filename, t.totalBytes);
+      t.localUri = uri;
+      // SAF 失败时在 error 中记录提示（非致命，文件仍可用）
+      if (safFailed) {
+        t.error = '文件保存在应用缓存目录（未授权公共存储权限）';
+      }
       await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
     } else {
       t.localUri = result.uri;
@@ -403,7 +340,6 @@ async function startTask(id: string, retryCount = 0) {
     notify(t);
     flushQueue();
   } catch (e: any) {
-    clearInterval(stallTimer);
     activeResumables.delete(id);
     speedSampler.delete(id);
 
@@ -412,14 +348,18 @@ async function startTask(id: string, retryCount = 0) {
 
     const msg: string = e?.message ?? '';
 
-    // 网络错误自动重试（指数退避）
-    if (isRetryableError(msg) && retryCount < MAX_RETRIES) {
-      const delay = RETRY_BASE_DELAY_MS * Math.pow(2, retryCount);
-      t.error = `网络异常，${delay / 1000}s 后重试（${retryCount + 1}/${MAX_RETRIES}）…`;
-      t.status = 'downloading';
+    // 自动重试：临时网络错误且未超过重试次数
+    if (isTransientError(msg) && (t._autoRetryCount ?? 0) < MAX_AUTO_RETRY) {
+      t._autoRetryCount = (t._autoRetryCount ?? 0) + 1;
+      t.status = 'pending';
+      t.error = `网络波动，自动重试中 (${t._autoRetryCount}/${MAX_AUTO_RETRY})...`;
+      t.progress = 0;
+      t.speed = 0;
+      t.eta = -1;
       notify(t);
-      await sleep(delay);
-      return startTask(id, retryCount + 1);
+      await cleanupTempDir(id);
+      flushQueue();
+      return;
     }
 
     t.status = 'failed';
@@ -431,24 +371,35 @@ async function startTask(id: string, retryCount = 0) {
       t.error = '下载链接已失效（403），请重新获取';
     else if (msg.includes('404') || msg.includes('Not Found'))
       t.error = '文件不存在（404），该版本可能已删除';
-    else if (isRetryableError(msg))
-      t.error = `网络持续不稳定，已重试 ${MAX_RETRIES} 次，请检查网络后手动重试`;
+    else if (msg.includes('timeout') || msg.includes('ETIMEDOUT'))
+      t.error = '下载超时，请检查网络后重试';
+    else if (msg.includes('ECONNRESET') || msg.includes('ECONNREFUSED'))
+      t.error = '连接被重置，请检查网络后重试';
+    else if (msg.includes('ENOTFOUND') || msg.includes('DNS'))
+      t.error = 'DNS 解析失败，请检查网络连接';
     else
       t.error = msg || '下载失败，请重试';
 
     notify(t);
+    await cleanupTempDir(id);
     flushQueue();
   }
 }
 
-async function validateFile(uri: string): Promise<string | null> {
+/** 校验下载完成的文件：检查存在性、大小（与预期对比） */
+async function validateFile(uri: string, expectedSize: number): Promise<string | null> {
   if (IS_WEB || uri.startsWith('content://')) return null;
   const fs = getFS();
   if (!fs) return null;
   try {
     const info = await fs.getInfoAsync(uri);
     if (!info.exists) return '文件不存在，下载可能未完成';
-    if ((info as any).size === 0) return '文件大小为 0，下载可能不完整';
+    const actualSize = (info as any).size ?? 0;
+    if (actualSize === 0) return '文件大小为 0，下载可能不完整';
+    // 如果服务器提供了预期大小，校验实际大小是否匹配（允许 5% 误差）
+    if (expectedSize > 0 && actualSize < expectedSize * 0.95) {
+      return `文件大小异常（预期 ${formatBytes(expectedSize)}，实际 ${formatBytes(actualSize)}），下载可能不完整`;
+    }
     return null;
   } catch { return null; }
 }
@@ -466,6 +417,7 @@ export function getAllTasks(): DownloadTask[] {
 export function getTask(id: string): DownloadTask | undefined { return tasks.get(id); }
 
 export function findTaskByUrl(url: string): DownloadTask | undefined {
+  if (!url) return undefined;
   return [...tasks.values()].find((t) => t.url === url);
 }
 
@@ -473,11 +425,18 @@ export function enqueue(params: {
   url: string; filename: string; appId: number; appName: string;
   owner: string; repo: string; avatarUrl: string; version: string;
 }): string {
+  // 检查是否已有相同 URL 的活跃任务
+  const existing = findTaskByUrl(params.url);
+  if (existing && ['pending', 'downloading', 'paused'].includes(existing.status)) {
+    return existing.id;
+  }
+
   const id = genId();
   const task: DownloadTask = {
     id, ...params,
     status: 'pending', progress: 0, bytesWritten: 0, totalBytes: 0,
     speed: 0, eta: -1, localUri: null, error: null, createdAt: Date.now(),
+    _autoRetryCount: 0,
   };
   tasks.set(id, task);
   notify(task);
@@ -488,13 +447,27 @@ export function enqueue(params: {
 export function retry(oldId: string): string {
   const old = tasks.get(oldId);
   if (!old) return '';
+
+  // 保留 resumeData 以便断点续传
+  const resumeData = old.resumeData;
   tasks.delete(oldId);
   speedSampler.delete(oldId);
   activeResumables.delete(oldId);
-  return enqueue({
+
+  const newId = genId();
+  const task: DownloadTask = {
+    id: newId,
     url: old.url, filename: old.filename, appId: old.appId, appName: old.appName,
     owner: old.owner, repo: old.repo, avatarUrl: old.avatarUrl, version: old.version,
-  });
+    status: 'pending', progress: 0, bytesWritten: 0, totalBytes: 0,
+    speed: 0, eta: -1, localUri: null, error: null, createdAt: Date.now(),
+    resumeData, // 保留断点续传数据
+    _autoRetryCount: 0,
+  };
+  tasks.set(newId, task);
+  notify(task);
+  flushQueue();
+  return newId;
 }
 
 export async function pause(id: string): Promise<void> {
@@ -505,8 +478,10 @@ export async function pause(id: string): Promise<void> {
   if (resumable) {
     try {
       const snapshot = await resumable.pauseAsync();
-      task.resumeData = snapshot?.resumeData ?? undefined;
-    } catch { /* ignore */ }
+      if (snapshot?.resumeData) {
+        task.resumeData = snapshot.resumeData;
+      }
+    } catch { /* pauseAsync 失败时丢弃 resumeData，下次从头下载 */ }
     activeResumables.delete(id);
   }
 
@@ -515,68 +490,58 @@ export async function pause(id: string): Promise<void> {
   task.speed = 0;
   task.eta = -1;
   notify(task);
-  persistPausedTasks();
 }
 
 export async function resume(id: string): Promise<void> {
   const task = tasks.get(id);
   if (!task || task.status !== 'paused') return;
   task.status = 'pending';
+  task.error = null;
   notify(task);
-  // 恢复后不再需要持久化（已是活跃任务）
-  AsyncStorage.getItem(TASKS_PERSIST_KEY).then((raw) => {
-    if (!raw) return;
-    const saved: DownloadTask[] = JSON.parse(raw).filter((t: DownloadTask) => t.id !== id);
-    AsyncStorage.setItem(TASKS_PERSIST_KEY, JSON.stringify(saved)).catch(() => {});
-  }).catch(() => {});
   flushQueue();
 }
 
 export async function cancel(id: string): Promise<void> {
   const task = tasks.get(id);
   if (!task) return;
-  task.status = 'cancelled';
 
+  // 先取消活跃下载再改状态，避免竞态
   const resumable = activeResumables.get(id);
   if (resumable) {
-    try { resumable.cancelAsync?.(); } catch { /* ignore */ }
+    try { await resumable.cancelAsync?.(); } catch { /* ignore */ }
     activeResumables.delete(id);
   }
+
+  task.status = 'cancelled';
   speedSampler.delete(id);
 
-  // 清理临时目录
-  if (!IS_WEB) {
-    const fs = getFS();
-    if (fs) {
-      const tempDir = `${fs.documentDirectory ?? ''}dl_${id}/`;
-      fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
-    }
-  }
+  await cleanupTempDir(id);
 
   tasks.delete(id);
-  notify({ ...task });
+  notify(task);
   flushQueue();
-  persistPausedTasks();
 }
 
 export async function deleteFile(id: string): Promise<void> {
   const task = tasks.get(id);
   if (!task) return;
 
+  // 活跃任务先取消
   if (['downloading', 'pending'].includes(task.status)) {
     await cancel(id);
-    subscribers.forEach((cb) => cb({ id: '__refresh__' } as any));
+    notifyRefresh();
     return;
   }
 
+  // 删除本地文件
   if (!IS_WEB && task.localUri) {
     const fs = getFS();
-    if (fs) fs.deleteAsync(task.localUri, { idempotent: true }).catch(() => null);
+    if (fs) await fs.deleteAsync(task.localUri, { idempotent: true }).catch(() => null);
   }
 
   tasks.delete(id);
   speedSampler.delete(id);
-  subscribers.forEach((cb) => cb({ id: '__refresh__' } as any));
+  notifyRefresh();
 }
 
 export function clearFinished(): void {
@@ -586,41 +551,43 @@ export function clearFinished(): void {
       speedSampler.delete(id);
     }
   }
-  subscribers.forEach((cb) => cb({ id: '__refresh__' } as any));
+  notifyRefresh();
 }
 
 export async function pauseAll(): Promise<void> {
   const pausePromises: Promise<void>[] = [];
   for (const [id, task] of tasks) {
-    if (task.status === 'downloading' || task.status === 'pending') {
-      if (task.status === 'downloading') {
-        const resumable = activeResumables.get(id);
-        if (resumable) {
-          // 等待 pauseAsync 完成，确保 resumeData 写入后再持久化
-          pausePromises.push(
-            resumable.pauseAsync().then((s) => {
-              task.resumeData = s?.resumeData ?? undefined;
-            }).catch(() => undefined),
-          );
-          activeResumables.delete(id);
-        }
-        speedSampler.delete(id);
+    if (task.status === 'downloading') {
+      const resumable = activeResumables.get(id);
+      if (resumable) {
+        pausePromises.push(
+          resumable.pauseAsync().then((s) => {
+            if (s?.resumeData) task.resumeData = s.resumeData;
+          }).catch(() => null)
+        );
+        activeResumables.delete(id);
       }
+      speedSampler.delete(id);
+      task.status = 'paused';
+      task.speed = 0;
+      task.eta = -1;
+      notify(task);
+    } else if (task.status === 'pending') {
       task.status = 'paused';
       task.speed = 0;
       task.eta = -1;
       notify(task);
     }
   }
-  // 等待所有 resumeData 就绪后再落盘，防止 App 被杀时 resumeData 丢失
-  await Promise.allSettled(pausePromises);
-  persistPausedTasks();
+  // 等待所有 pauseAsync 完成后再返回
+  await Promise.all(pausePromises);
 }
 
 export function resumeAll(): void {
   for (const [, task] of tasks) {
     if (task.status === 'paused') {
       task.status = 'pending';
+      task.error = null;
       notify(task);
     }
   }
@@ -631,9 +598,11 @@ export function clearAllTasks(): void {
   for (const [id] of tasks.entries()) {
     const resumable = activeResumables.get(id);
     if (resumable) resumable.cancelAsync?.().catch(() => null);
+    // 清理临时目录（fire-and-forget）
+    cleanupTempDir(id);
   }
   tasks.clear();
   activeResumables.clear();
   speedSampler.clear();
-  subscribers.forEach((cb) => cb({ id: '__refresh__' } as any));
+  notifyRefresh();
 }

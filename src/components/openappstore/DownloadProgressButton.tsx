@@ -76,7 +76,10 @@ export default function DownloadProgressButton({
   compact = false,
 }: Props) {
   const { enqueue, retry, pause, resume, cancel, findByUrl } = useDownload();
-  const task: DownloadTask | undefined = findByUrl(downloadUrl);
+  const taskRef = useRef<DownloadTask | undefined>(undefined);
+  // 每次渲染时更新 taskRef，避免闭包过期
+  taskRef.current = findByUrl(downloadUrl);
+  const task = taskRef.current;
   const status = task?.status;
   const isInstaller = isInstallerFile(filename);
 
@@ -95,14 +98,26 @@ export default function DownloadProgressButton({
       !autoInstallFiredRef.current
     ) {
       autoInstallFiredRef.current = true;
-      openLocalFile(task.localUri, filename).then(({ ok, error }) => {
-        if (!ok && error) setOpenError(error);
-      });
+      // 验证 localUri 可访问
+      const fs = (() => { try { return require('expo-file-system'); } catch { return null; } })();
+      if (fs) {
+        fs.getInfoAsync(task.localUri).then((info: any) => {
+          if (info.exists) {
+            openLocalFile(task.localUri!, filename).then(({ ok, error }) => {
+              if (!ok && error) setOpenError(error);
+            });
+          }
+        }).catch(() => {});
+      }
     }
   }, [status, task?.localUri, filename]);
 
   const handlePress = async () => {
     setOpenError(null);
+    if (!downloadUrl) {
+      setOpenError('下载链接无效');
+      return;
+    }
     if (!task || status === 'cancelled') {
       enqueue({ url: downloadUrl, filename, appId, appName, owner, repo, avatarUrl, version });
       return;

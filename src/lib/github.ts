@@ -1,7 +1,39 @@
 import type { AppItem, GitHubRelease } from '@/types'
 import { getCache, setCache, HOUR, DAY, searchCacheKey } from '@/lib/cache'
+import { Platform } from 'react-native'
 
 let cachedToken: string | null = null
+
+/** 跨平台 base64 解码（Hermes 引擎无全局 atob） */
+function base64Decode(str: string): string {
+  // 清理空白字符
+  const cleaned = str.replace(/\s/g, '');
+  try {
+    // 优先使用原生 atob
+    if (typeof atob === 'function') return atob(cleaned);
+  } catch { /* fall through */ }
+  // 回退：手动解码
+  try {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+    let output = '';
+    let i = 0;
+    while (i < cleaned.length) {
+      const enc1 = chars.indexOf(cleaned.charAt(i++));
+      const enc2 = chars.indexOf(cleaned.charAt(i++));
+      const enc3 = chars.indexOf(cleaned.charAt(i++));
+      const enc4 = chars.indexOf(cleaned.charAt(i++));
+      const chr1 = (enc1 << 2) | (enc2 >> 4);
+      const chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
+      const chr3 = ((enc3 & 3) << 6) | enc4;
+      output += String.fromCharCode(chr1);
+      if (enc3 !== 64) output += String.fromCharCode(chr2);
+      if (enc4 !== 64) output += String.fromCharCode(chr3);
+    }
+    return output;
+  } catch {
+    return '';
+  }
+}
 
 /**
  * 会话级安装包状态缓存（内存 Map）：快速访问，重启后清空
@@ -87,6 +119,10 @@ async function searchGitHubDirect(
   if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
   const res = await fetch(`${GITHUB_API}/search/repositories?${params}`, { headers })
   console.log('[GitHub] Direct API response status:', res.status);
+  if (res.status === 403 || res.status === 429) {
+    console.warn('[GitHub] API rate limit exceeded');
+    throw new Error('GitHub API 请求次数已达上限，请稍后再试或在「我的」页面配置 Token')
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     console.warn('[GitHub] API error:', res.status, text);
@@ -384,9 +420,15 @@ export async function fetchRepoDetail(owner: string, repo: string): Promise<AppI
     result = mapRepoToApp(data.data)
   } else {
     // 代理失败 → 直连
-    const headers: Record<string, string> = { 'Accept': 'application/vnd.github+json' }
+    const headers: Record<string, string> = {
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    }
     if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
     const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}`, { headers })
+    if (res.status === 403 || res.status === 429) {
+      throw new Error('GitHub API 请求次数已达上限，请稍后再试或在「我的」页面配置 Token')
+    }
     if (!res.ok) throw new Error(`获取仓库详情失败 (${res.status})`)
     result = mapRepoToApp(await res.json())
   }
@@ -394,18 +436,11 @@ export async function fetchRepoDetail(owner: string, repo: string): Promise<AppI
   return result
 }
 
-export async function fetchReleases(owner: string, repo: string, page = 1, bypassCache = false): Promise<GitHubRelease[]> {
+export async function fetchReleases(owner: string, repo: string, page = 1): Promise<GitHubRelease[]> {
   const cacheKey = `releases:${owner}/${repo}:${page}`
-  if (!bypassCache) {
-    const cached = await getCache<GitHubRelease[]>(cacheKey)
-    if (cached) return cached
-  }
-  const data = await callEdgeFunction({
-    action: 'releases',
-    params: { owner, repo, page },
-    token: cachedToken,
-  })
-  const list = data?.data ?? null
+  const cached = await getCache<GitHubRelease[]>(cacheKey)
+  if (cached) return cached
+
   const parseReleases = (arr: any[]) => arr.map((r: any) => ({
     id: r.id,
     tag_name: r.tag_name,
@@ -420,18 +455,36 @@ export async function fetchReleases(owner: string, repo: string, page = 1, bypas
       browser_download_url: a.browser_download_url,
     })),
   }))
+
+  const data = await callEdgeFunction({
+    action: 'releases',
+    params: { owner, repo, page },
+    token: cachedToken,
+  })
+  const list = data?.data ?? null
   let result: GitHubRelease[]
   if (Array.isArray(list)) {
     result = parseReleases(list)
   } else {
     // 代理失败 → 直连
-    const headers: Record<string, string> = { 'Accept': 'application/vnd.github+json' }
+    const headers: Record<string, string> = {
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    }
     if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
     const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/releases?page=${page}&per_page=10`, { headers })
+    if (res.status === 403 || res.status === 429) {
+      // 速率限制：返回空数组，不抛错
+      console.warn(`[GitHub] Releases 速率限制: ${owner}/${repo}`);
+      return [];
+    }
     if (!res.ok) throw new Error(`获取 Releases 失败 (${res.status})`)
     result = parseReleases(await res.json())
   }
-  await setCache(cacheKey, result, DAY)
+  // 仅缓存非空结果
+  if (result.length > 0) {
+    await setCache(cacheKey, result, DAY)
+  }
   return result
 }
 
@@ -444,15 +497,15 @@ export async function fetchReadme(owner: string, repo: string): Promise<string> 
     params: { owner, repo },
     token: cachedToken,
   })
-  // GitHub API 返回的 base64 中含 `\n`，必须先清除再 atob
-  const raw = (data?.data?.content || '').replace(/\s/g, '')
+  // GitHub API 返回的 base64 中含 `\n`，必须先清除再解码
+  const raw = base64Decode(data?.data?.content || '')
   if (!raw) return ''
   let result = ''
   try {
-    const bytes = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0))
+    const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0))
     result = new TextDecoder().decode(bytes)
   } catch {
-    try { result = decodeURIComponent(escape(atob(raw))) } catch { result = '' }
+    try { result = decodeURIComponent(escape(raw)) } catch { result = '' }
   }
   await setCache(cacheKey, result, DAY)
   return result
@@ -472,15 +525,20 @@ export async function fetchContributors(owner: string, repo: string): Promise<Ar
 }
 
 export async function fetchRateLimit(): Promise<{ remaining: number; limit: number; reset: number }> {
-  const data = await callEdgeFunction({
-    action: 'rate_limit',
-    token: cachedToken,
-  })
-  const core = data.data?.resources?.core || data.data?.rate || { remaining: 0, limit: 60, reset: 0 }
-  return {
-    remaining: core.remaining ?? 0,
-    limit: core.limit ?? 60,
-    reset: core.reset ?? 0,
+  try {
+    const data = await callEdgeFunction({
+      action: 'rate_limit',
+      token: cachedToken,
+    })
+    const core = data?.data?.resources?.core || data?.data?.rate || { remaining: 0, limit: 60, reset: 0 }
+    return {
+      remaining: core.remaining ?? 0,
+      limit: core.limit ?? 60,
+      reset: core.reset ?? 0,
+    }
+  } catch {
+    // 查询失败时返回默认值，不阻断 UI
+    return { remaining: 0, limit: 60, reset: 0 }
   }
 }
 

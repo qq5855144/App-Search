@@ -277,14 +277,17 @@ export default function DetailScreen() {
 
   useEffect(() => {
     if (!owner || !repo) return;
+    let cancelled = false;
     (async () => {
       try {
         setLoading(true);
+        setError('');
         const [detail, rels, md] = await Promise.all([
           fetchRepoDetail(owner, repo),
           fetchReleases(owner, repo).catch(() => [] as GitHubRelease[]),
           fetchReadme(owner, repo).catch(() => ''),
         ]);
+        if (cancelled) return;
         setApp(detail);
         // Record view event
         addAppEvent({ event_type: 'view', app_id: detail.id, app_name: detail.name, owner: owner ?? '', repo: repo ?? '', avatar_url: detail.avatar_url ?? '' }).catch(() => {});
@@ -295,15 +298,23 @@ export default function DetailScreen() {
         })).filter((r) => r.assets.length > 0);
         setReleases(installRels);
         if (installRels.length > 0) setExpandedRelease(installRels[0].id);
-        setReadme(md); // 不限制字数，完整渲染 README
+        setReadme(md);
         const f = await isFavorite(detail.id).catch(() => false);
         setFavored(f);
       } catch (e: any) {
-        setError(e?.message || '加载失败');
+        if (cancelled) return;
+        const msg = e?.message || '加载失败';
+        // 识别速率限制错误
+        if (msg.includes('上限') || msg.includes('rate limit') || msg.includes('403')) {
+          setError('GitHub API 请求次数已达上限，请稍后再试或在「我的」页面配置 Token');
+        } else {
+          setError(msg);
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => { cancelled = true; };
   }, [owner, repo]);
 
   // 翻译描述和 README（enabled/targetLang/原文 任一变化时重新执行）

@@ -2,20 +2,15 @@
  * 全局下载状态 Context
  * 订阅 downloadManager 的所有任务变更，统一向组件树分发
  * 集成通知系统：下载进度/完成/失败通知
- *
- * 后台下载保护逻辑：
- * - App 切后台时：立即 pauseAll（保存 resumeData）并持久化到 AsyncStorage
- * - App 回前台时：自动续传所有因切后台被暂停的任务
- * - App 被杀后重启：restorePersistedTasks() 恢复为 paused 状态，用户点"全部恢复"或手动续传
  */
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { AppState, Platform } from 'react-native';
+import { Platform } from 'react-native';
 import * as DM from '@/lib/downloadManager';
+import { REFRESH_EVENT } from '@/lib/downloadManager';
 import {
   showSystemProgress, showSystemComplete, showSystemFailed,
   dismissSystemNotification, getNotificationPermissionStatus, requestNotificationPermission,
 } from '@/lib/notifications';
-import { upsertInstalledApp } from '@/lib/database';
 import type { DownloadTask } from '@/lib/downloadManager';
 
 interface DownloadContextValue {
@@ -28,7 +23,7 @@ interface DownloadContextValue {
   deleteFile: (id: string) => Promise<void>;
   clearFinished: () => void;
   clearAllTasks: () => void;
-  pauseAll: () => void;
+  pauseAll: () => Promise<void>;
   resumeAll: () => void;
   findByUrl: (url: string) => DownloadTask | undefined;
   activeCount: number;
@@ -47,46 +42,39 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const unsubscribe = DM.subscribe((task) => {
-      if (task.id === '__refresh__') {
+      // 使用 Symbol REFRESH_EVENT 替代魔法字符串
+      if ((task as any).id === REFRESH_EVENT) {
         setTasks(DM.getAllTasks());
         return;
       }
 
+      const downloadTask = task as DownloadTask;
+
       // 系统通知
       if (Platform.OS !== 'web') {
-        const prev = lastNotifState.current.get(task.id);
+        const prev = lastNotifState.current.get(downloadTask.id);
         const prevKey = prev ? `${prev.status}_${Math.round(prev.progress * 10)}` : '';
-        const currKey = `${task.status}_${Math.round(task.progress * 10)}`;
+        const currKey = `${downloadTask.status}_${Math.round(downloadTask.progress * 10)}`;
 
         if (currKey !== prevKey) {
-          lastNotifState.current.set(task.id, { status: task.status, progress: task.progress });
+          lastNotifState.current.set(downloadTask.id, { status: downloadTask.status, progress: downloadTask.progress });
 
-      if (task.status === 'downloading' && task.progress > 0) {
+          if (downloadTask.status === 'downloading' && downloadTask.progress > 0) {
             showSystemProgress({
-              id: task.id, appName: task.appName, progress: task.progress,
-              speed: task.speed, multiThreaded: false,
+              id: downloadTask.id, appName: downloadTask.appName, progress: downloadTask.progress,
+              speed: downloadTask.speed, multiThreaded: false,
             }).catch(() => {});
-          } else if (task.status === 'completed') {
-            showSystemComplete({ id: task.id, appName: task.appName, totalBytes: task.totalBytes }).catch(() => {});
-            // 下载完成时自动写入"已安装"记录
-            upsertInstalledApp({
-              app_id: task.appId,
-              app_name: task.appName,
-              owner: task.owner,
-              repo: task.repo,
-              avatar_url: task.avatarUrl,
-              installed_version: task.version,
-              installed_at: new Date().toISOString(),
-            }).catch(() => {});
-          } else if (task.status === 'failed') {
-            showSystemFailed({ id: task.id, appName: task.appName, error: task.error }).catch(() => {});
-          } else if (task.status === 'cancelled') {
-            dismissSystemNotification(task.id).catch(() => {});
+          } else if (downloadTask.status === 'completed') {
+            showSystemComplete({ id: downloadTask.id, appName: downloadTask.appName, totalBytes: downloadTask.totalBytes }).catch(() => {});
+          } else if (downloadTask.status === 'failed') {
+            showSystemFailed({ id: downloadTask.id, appName: downloadTask.appName, error: downloadTask.error }).catch(() => {});
+          } else if (downloadTask.status === 'cancelled') {
+            dismissSystemNotification(downloadTask.id).catch(() => {});
           }
         }
       }
 
-      // 防抖更新 UI
+      // 防抖更新 UI（150ms）
       if (pendingRef.current) return;
       pendingRef.current = true;
       setTimeout(() => {
@@ -100,23 +88,6 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
       DM.hasDownloadsPermission().then((has) => setSafGranted(has));
     }
     return unsubscribe;
-  }, []);
-
-  // ── 后台保护：切后台仅持久化进度，不暂停下载；App 被杀重启时恢复断点 ──
-  useEffect(() => {
-    if (Platform.OS === 'web') return;
-
-    const handleAppStateChange = (nextState: string) => {
-      if (nextState === 'background' || nextState === 'inactive') {
-        // 切后台：只持久化当前任务状态（崩溃/被杀恢复用），不暂停下载
-        // 下载通知已设置 ongoing+sticky，Android 会维持前台服务优先级使下载继续
-        DM.persistCurrentTasks();
-      }
-      // 回前台：无需特殊处理，下载一直在进行
-    };
-
-    const sub = AppState.addEventListener('change', handleAppStateChange);
-    return () => sub.remove();
   }, []);
 
   const refreshSafStatus = async () => {
@@ -138,7 +109,7 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     if (Platform.OS === 'android' && !safGranted) {
       const granted = await DM.requestDownloadsPermission();
       setSafGranted(granted);
-      // 权限被拒也继续（文件降级保存到缓存区，不阻断下载）
+      // 权限被拒也继续下载（文件保留在缓存目录），但用户会看到提示
     }
     // 首次下载时懒请求通知权限（iOS/Android）
     if (Platform.OS !== 'web' && !notifRequestedRef.current) {
@@ -159,30 +130,15 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
   const value: DownloadContextValue = {
     tasks,
     enqueue: enqueueWithSaf,
-    retry: (oldId) => {
-      const newId = DM.retry(oldId);
-      setTasks(DM.getAllTasks());
-      return newId;
-    },
+    retry: DM.retry,
     pause: DM.pause,
     resume: DM.resume,
     cancel: DM.cancel,
     deleteFile: DM.deleteFile,
-    clearFinished: () => {
-      DM.clearFinished();
-      setTasks(DM.getAllTasks());
-    },
-    clearAllTasks: () => {
-      DM.clearAllTasks();
-      setTasks([]);
-    },
-    pauseAll: () => {
-      DM.pauseAll().finally(() => setTasks(DM.getAllTasks()));
-    },
-    resumeAll: () => {
-      DM.resumeAll();
-      setTasks(DM.getAllTasks());
-    },
+    clearFinished: DM.clearFinished,
+    clearAllTasks: DM.clearAllTasks,
+    pauseAll: DM.pauseAll,
+    resumeAll: DM.resumeAll,
     findByUrl: DM.findTaskByUrl,
     activeCount,
     safGranted,
