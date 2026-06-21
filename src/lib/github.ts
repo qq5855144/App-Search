@@ -436,10 +436,13 @@ export async function fetchRepoDetail(owner: string, repo: string): Promise<AppI
   return result
 }
 
-export async function fetchReleases(owner: string, repo: string, page = 1): Promise<GitHubRelease[]> {
+export async function fetchReleases(owner: string, repo: string, page = 1, bypassCache = false): Promise<GitHubRelease[]> {
   const cacheKey = `releases:${owner}/${repo}:${page}`
-  const cached = await getCache<GitHubRelease[]>(cacheKey)
-  if (cached) return cached
+
+  if (!bypassCache) {
+    const cached = await getCache<GitHubRelease[]>(cacheKey)
+    if (cached) return cached
+  }
 
   const parseReleases = (arr: any[]) => arr.map((r: any) => ({
     id: r.id,
@@ -486,6 +489,97 @@ export async function fetchReleases(owner: string, repo: string, page = 1): Prom
     await setCache(cacheKey, result, DAY)
   }
   return result
+}
+
+// ─── 版本号工具 ─────────────────────────────────────────────────────────────────
+
+/** 规范化版本号：去掉前缀 v/V，统一为 semver 格式 */
+export function normalizeVersion(version: string | null | undefined): string {
+  if (!version) return '';
+  return version.replace(/^[vV]/, '').trim();
+}
+
+/** 比较两个 semver 版本号，返回 -1 / 0 / 1（a < b → -1） */
+export function compareVersions(a: string, b: string): number {
+  const na = normalizeVersion(a);
+  const nb = normalizeVersion(b);
+  if (!na || !nb) return 0;
+  const pa = na.split('.').map(Number);
+  const pb = nb.split('.').map(Number);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const va = pa[i] || 0;
+    const vb = pb[i] || 0;
+    if (va !== vb) return va < vb ? -1 : 1;
+  }
+  return 0;
+}
+
+/** 判断 a 是否严格小于 b */
+export function isVersionOlder(a: string, b: string): boolean {
+  return compareVersions(a, b) < 0;
+}
+
+// ─── 轻量级最新版本查询 ──────────────────────────────────────────────────────────
+
+/**
+ * 仅获取仓库的最新 release 的 tag_name，不拉取完整 assets 列表。
+ * 专用于更新检测，数据量小、速度快、节省 API 配额。
+ *
+ * @param bypassCache 是否跳过缓存（更新检测时应为 true）
+ * @returns tag_name 或 null（无 release 或请求失败）
+ */
+export async function fetchLatestReleaseTag(
+  owner: string,
+  repo: string,
+  bypassCache = false,
+): Promise<string | null> {
+  const cacheKey = `latestTag:${owner}/${repo}`;
+
+  if (!bypassCache) {
+    const cached = await getCache<string>(cacheKey);
+    if (cached) return cached;
+  }
+
+  try {
+    // 优先通过 Edge Function 代理
+    const data = await callEdgeFunction({
+      action: 'latest_release',
+      params: { owner, repo },
+      token: cachedToken,
+    });
+    const releaseTag = data?.data?.tag_name || data?.data?.tag_name;
+    if (typeof releaseTag === 'string' && releaseTag.length > 0) {
+      await setCache(cacheKey, releaseTag, 6 * HOUR);
+      return releaseTag;
+    }
+    // 代理失败或无数据 → 直连 GitHub API
+    const headers: Record<string, string> = {
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+    if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`;
+    const res = await fetch(
+      `${GITHUB_API}/repos/${owner}/${repo}/releases?per_page=1&page=1`,
+      { headers },
+    );
+    if (res.status === 403 || res.status === 429) {
+      console.warn(`[GitHub] latestReleaseTag 速率限制: ${owner}/${repo}`);
+      return null;
+    }
+    if (!res.ok) return null;
+    const releases = await res.json();
+    if (!Array.isArray(releases) || releases.length === 0) return null;
+    const tag = releases[0]?.tag_name;
+    if (typeof tag === 'string' && tag.length > 0) {
+      await setCache(cacheKey, tag, 6 * HOUR);
+      return tag;
+    }
+    return null;
+  } catch (e) {
+    console.warn(`[GitHub] fetchLatestReleaseTag 失败: ${owner}/${repo}`, (e as Error)?.message);
+    return null;
+  }
 }
 
 export async function fetchReadme(owner: string, repo: string): Promise<string> {
