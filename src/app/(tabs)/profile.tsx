@@ -4,13 +4,14 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useAndroidExitBack } from '@/hooks/useAndroidExitBack';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import Constants from 'expo-constants';
 import { saveToken, getToken, clearToken } from '@/lib/token';
 import {
   getFavoriteStats,
   getDownloadHistory,
   clearDownloadHistory,
 } from '@/lib/database';
-import { fetchRateLimit } from '@/lib/github';
+import { fetchReleases, fetchRateLimit } from '@/lib/github';
 import { clearAllCache } from '@/lib/cache';
 import { getEventCounts } from '@/lib/events';
 import { useDownload } from '@/ctx/DownloadContext';
@@ -136,6 +137,25 @@ export default function ProfileTab() {
   const [translateExpanded, setTranslateExpanded] = useState(false);
   const [dataExpanded, setDataExpanded] = useState(false);
   const [aboutExpanded, setAboutExpanded] = useState(false);
+  const appVersion = Constants.expoConfig?.version ?? '1.0.0';
+  // 检测更新状态：idle | checking | latest | update_available | error
+  type UpdateCheckState = 'idle' | 'checking' | 'latest' | 'update_available' | 'error';
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheckState>('idle');
+  const [latestVersion, setLatestVersion] = useState<string | null>(null);
+
+  const checkAppUpdate = async () => {
+    setUpdateCheck('checking');
+    setLatestVersion(null);
+    try {
+      const releases = await fetchReleases('qq5855144', 'App-Search', 1, true);
+      if (!releases.length) { setUpdateCheck('error'); return; }
+      const latest = releases[0].tag_name.replace(/^v/i, '');
+      setLatestVersion(latest);
+      setUpdateCheck(latest === appVersion ? 'latest' : 'update_available');
+    } catch {
+      setUpdateCheck('error');
+    }
+  };
   const tokenInputRef = useRef<TextInput>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -507,14 +527,14 @@ export default function ProfileTab() {
           <CollapseHeader
             icon="information-circle-outline" iconColor="#1677FF"
             title="关于应用"
-            badge={<Text style={{ fontSize: 12, color: '#CCC' }}>v1.0.0</Text>}
+            badge={<Text style={{ fontSize: 12, color: '#CCC' }}>v{appVersion}</Text>}
             expanded={aboutExpanded}
             onToggle={() => setAboutExpanded((v) => !v)}
           />
           {aboutExpanded && (
             <View style={{ borderTopWidth: 0.5, borderTopColor: '#F0F0F0' }}>
               {([
-                { label: '应用版本', value: '1.0.0', onPress: undefined },
+                { label: '应用版本', value: appVersion, onPress: undefined },
                 { label: '数据来源', value: 'GitHub API', onPress: undefined },
                 { label: '运行平台', value: Platform.OS, onPress: undefined },
                 { label: '项目仓库', value: 'GitHub', onPress: () => Linking.openURL('https://github.com/qq5855144/App-Search') },
@@ -536,6 +556,39 @@ export default function ProfileTab() {
                   {i < arr.length - 1 && <Divider />}
                 </React.Fragment>
               ))}
+              {/* 检测更新行 */}
+              <Divider />
+              <Pressable
+                onPress={updateCheck !== 'checking' ? checkAppUpdate : undefined}
+                android_ripple={{ color: '#F5F5F5' }}
+                style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+                  paddingHorizontal: 16, paddingVertical: 13 }}
+              >
+                <Text style={{ color: '#666', fontSize: 14 }}>检测更新</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  {updateCheck === 'checking' && <ActivityIndicator size={14} color="#1677FF" />}
+                  {updateCheck === 'latest' && (
+                    <Text style={{ fontSize: 13, color: '#52C41A', fontWeight: '500' }}>已是最新版本</Text>
+                  )}
+                  {updateCheck === 'update_available' && (
+                    <Pressable onPress={() => Linking.openURL('https://github.com/qq5855144/App-Search/releases/latest')}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 4,
+                        backgroundColor: '#FFF7E6', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 }}>
+                      <Text style={{ fontSize: 13, color: '#FA8C16', fontWeight: '600' }}>
+                        发现新版 v{latestVersion}
+                      </Text>
+                      <Ionicons name="open-outline" size={12} color="#FA8C16" />
+                    </Pressable>
+                  )}
+                  {updateCheck === 'error' && (
+                    <Text style={{ fontSize: 13, color: '#FF4D4F' }}>检测失败，点击重试</Text>
+                  )}
+                  {updateCheck === 'idle' && (
+                    <Text style={{ fontSize: 13, color: '#BBB' }}>点击检测</Text>
+                  )}
+                  {updateCheck !== 'checking' && <Ionicons name="chevron-forward" size={14} color="#DDD" />}
+                </View>
+              </Pressable>
             </View>
           )}
         </View>
