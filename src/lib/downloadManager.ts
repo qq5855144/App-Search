@@ -1,14 +1,17 @@
 /**
- * 下载管理器 v13 — react-native-blob-util 原生下载
+ * 下载管理器 v14 — expo-file-system createDownloadResumable
  *
- * react-native-blob-util 使用自己的原生 HTTP 客户端（OkHttp），
- * 自动跟随 302 重定向，下载直接写入磁盘无需 base64 桥接。
- * 6 个版本的自研方案均因 expo-file-system 不跟随 302 或 fetch.arrayBuffer 不可用而失败。
+ * 采用 Expo 官方下载 API：
+ *  1. 用 AbortController + fetch(redirect:'follow') 获取最终 CDN URL（仅读 headers，不下载 body）
+ *  2. 将最终 URL 传给 createDownloadResumable，完全绕过 GitHub 302 多级跳转
+ *  3. 支持真正的断点续传（pauseAsync / resumeData）
+ *
+ * 历史：v13 使用 react-native-blob-util，因 OkHttp 原生层与 GitHub CDN SSL/HTTP2
+ * 不兼容，产生 "ReactNativeBlobUtil request error"，已回退至 expo-file-system。
  */
 import { Platform } from 'react-native';
+import { fetch } from 'expo/fetch';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-// @ts-ignore — react-native-blob-util ships its own native types; suppress tsc lookup error
-import ReactNativeBlobUtil from 'react-native-blob-util';
 import * as _FileSystem from 'expo-file-system/legacy';
 
 const IS_WEB = Platform.OS === 'web';
@@ -171,8 +174,8 @@ type ProgressCallback = (task: DownloadTask | { id: typeof REFRESH_EVENT }) => v
 // ─── 全局状态 ─────────────────────────────────────────────────────────────────
 const tasks = new Map<string, DownloadTask>();
 const subscribers = new Set<ProgressCallback>();
-/** 活跃的 ReactNativeBlobUtil session，用于取消 */
-const activeSessions = new Map<string, any>();
+/** 活跃的 expo-file-system DownloadResumable，用于暂停/取消 */
+const activeSessions = new Map<string, _FileSystem.DownloadResumable>();
 const speedSampler = new Map<string, { ts: number; bytes: number }>();
 
 function genId(): string { return `dl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`; }
@@ -259,49 +262,71 @@ async function startTask(id: string) {
   task.eta = -1;
   notify(task);
 
-  // ── 预解析 GitHub 重定向链，获取真实 CDN URL ──────────────────────────────
-  // GitHub browser_download_url 经过 1-2 次 302 跳转才到 S3/CDN，
-  // react-native-blob-util 内部跟随重定向有时不更新进度回调导致卡在 0%，
-  // 提前用 expo/fetch 拿到最终 URL 后再交给 rnbu 直接下载 CDN 地址。
+  // ── 用 AbortController 预解析 GitHub 重定向，获取最终 CDN URL ─────────────
+  // GitHub browser_download_url 经 1-2 次 302 跳转到 objects.githubusercontent.com
+  // expo-file-system createDownloadResumable 不跟随 302，必须先拿到最终地址
+  // 用 AbortController 在收到 response headers 后立即 abort，不下载 body 避免浪费流量
   let resolvedUrl = task.url;
-  if (task.url.includes('github.com')) {
-    try {
-      const headRes = await fetch(task.url, {
-        method: 'GET',
-        // 只要第一个响应头，立即 abort 后读 url 属性（已包含重定向后的地址）
-        redirect: 'follow',
-        headers: { 'User-Agent': 'OpenAppStore/1.0' },
-      });
-      // expo/fetch 的 Response.url 是最终 URL（跟随所有重定向后的地址）
-      if (headRes.url && headRes.url !== task.url) {
-        resolvedUrl = headRes.url;
-      }
-    } catch {
-      // 预解析失败则使用原 URL，不影响后续下载
-    }
+  try {
+    const ctrl = new AbortController();
+    const res = await fetch(task.url, {
+      signal: ctrl.signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': 'OpenAppStore/1.0' },
+    });
+    // response.url 是跟随所有重定向后的最终地址
+    if (res.url && res.url !== task.url) resolvedUrl = res.url;
+    // 立即 abort 停止 body 下载
+    ctrl.abort();
+    res.body?.cancel?.().catch(() => {});
+  } catch {
+    // 预解析失败（含 AbortError）均降级使用原始 URL
   }
 
-  // react-native-blob-util 配置：下载到指定路径，带进度回调
-  const session = ReactNativeBlobUtil.config({
-    path: localUri,
-    fileCache: false, // 不自动管理缓存，我们手动管理
-    trusty: true,     // 信任 CDN 的 SSL 证书（对象存储 CDN 有时使用通配符证书）
-  }).fetch('GET', resolvedUrl, {
-    'User-Agent': 'OpenAppStore/1.0',
-  });
+  // ── expo-file-system createDownloadResumable ──────────────────────────────
+  const progressCallback = (dp: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => {
+    const t = tasks.get(id);
+    if (!t || t.status !== 'downloading') return;
 
-  activeSessions.set(id, session);
+    const { totalBytesWritten, totalBytesExpectedToWrite } = dp;
+    const now = Date.now();
+    const prev = speedSampler.get(id) ?? { ts: now, bytes: 0 };
+    const elapsed = (now - prev.ts) / 1000;
 
-  // ── 卡顿检测：60s 内无字节增量则取消并自动重试 ────────────────────────────
+    let speed = t.speed;
+    if (elapsed >= 0.5) {
+      speed = Math.round((totalBytesWritten - prev.bytes) / elapsed);
+      speedSampler.set(id, { ts: now, bytes: totalBytesWritten });
+    }
+
+    t.bytesWritten = totalBytesWritten;
+    if (totalBytesExpectedToWrite > 0) t.totalBytes = totalBytesExpectedToWrite;
+    t.progress = t.totalBytes > 0 ? totalBytesWritten / t.totalBytes : -1;
+    t.speed = speed > 0 ? speed : 0;
+    t.eta = speed > 0 && t.totalBytes > 0
+      ? Math.round((t.totalBytes - totalBytesWritten) / speed)
+      : -1;
+
+    notify(t);
+  };
+
+  const resumable = fs.createDownloadResumable(
+    resolvedUrl,
+    localUri,
+    { headers: { 'User-Agent': 'OpenAppStore/1.0' } },
+    progressCallback,
+  );
+  activeSessions.set(id, resumable);
+
+  // ── 卡顿检测：60s 无字节增量则取消并自动重试 ─────────────────────────────
   let lastBytesForStall = 0;
   const stallTimer = setInterval(() => {
     const t = tasks.get(id);
     if (!t || t.status !== 'downloading') { clearInterval(stallTimer); return; }
     if (t.bytesWritten === lastBytesForStall) {
-      // 60s 无进度 → 取消并重试
       clearInterval(stallTimer);
-      const sess = activeSessions.get(id);
-      if (sess) { sess.cancel?.(); activeSessions.delete(id); }
+      activeSessions.get(id)?.cancelAsync?.().catch(() => {});
+      activeSessions.delete(id);
       if ((t._autoRetryCount ?? 0) < MAX_AUTO_RETRY) {
         t._autoRetryCount = (t._autoRetryCount ?? 0) + 1;
         t.status = 'pending';
@@ -318,42 +343,8 @@ async function startTask(id: string) {
     }
   }, 60_000);
 
-  // 进度回调
-  session.progress({ count: 10, interval: 250 }, (received: number, total: number) => {
-    const t = tasks.get(id);
-    if (!t || t.status !== 'downloading') return;
-
-    const now = Date.now();
-    const prev = speedSampler.get(id) ?? { ts: now, bytes: 0 };
-    const elapsed = (now - prev.ts) / 1000;
-
-    let speed = t.speed;
-    if (elapsed >= 0.5) {
-      const bytesDelta = parseInt(received as any, 10) - prev.bytes;
-      speed = elapsed > 0 ? Math.round(bytesDelta / elapsed) : 0;
-      speedSampler.set(id, { ts: now, bytes: parseInt(received as any, 10) });
-    }
-
-    t.bytesWritten = parseInt(received as any, 10);
-    const hasTotal = parseInt(total as any, 10) > 0;
-    if (hasTotal) {
-      t.totalBytes = parseInt(total as any, 10);
-      t.progress = parseInt(received as any, 10) / parseInt(total as any, 10);
-    } else {
-      t.progress = parseInt(received as any, 10) > 0
-        ? Math.min(0.99, 1 - 1 / (parseInt(received as any, 10) / 1024 + 1))
-        : 0;
-    }
-    t.speed = speed > 0 ? speed : 0;
-    t.eta = (speed > 0 && hasTotal)
-      ? Math.round((parseInt(total as any, 10) - parseInt(received as any, 10)) / speed)
-      : -1;
-
-    notify(t);
-  });
-
   try {
-    const res = await session;
+    const result = await resumable.downloadAsync();
 
     clearInterval(stallTimer);
     activeSessions.delete(id);
@@ -362,22 +353,21 @@ async function startTask(id: string) {
     const t = tasks.get(id);
     if (!t) return;
 
-    const respInfo = res.info();
-    const status = respInfo.status;
-
-    if (status !== 200) {
-      t.status = 'failed';
-      t.error = `HTTP ${status}`;
-      notify(t);
-      await cleanupTempDir(id);
+    // 暂停/取消时 downloadAsync 返回 undefined
+    if (!result) {
+      if (t.status !== 'paused' && t.status !== 'cancelled') {
+        t.status = 'failed';
+        t.error = '下载中断，请重试';
+        notify(t);
+      }
       flushQueue();
       return;
     }
 
-    // 获取实际文件大小
+    // 校验文件大小
     let actualSize = 0;
     try {
-      const info = await fs.getInfoAsync(res.path());
+      const info = await fs.getInfoAsync(result.uri);
       actualSize = (info as any).size ?? 0;
     } catch { /* ignore */ }
 
@@ -398,21 +388,19 @@ async function startTask(id: string) {
     t.totalBytes = actualSize;
 
     if (Platform.OS === 'android') {
-      // moveToSafDownloads 内部已有 try-catch，此处再包一层防止任何意外异常导致 task 标记为 failed
-      let safResult = { uri: res.path(), safFailed: true };
+      let safResult = { uri: result.uri, safFailed: true };
       try {
-        safResult = await moveToSafDownloads(res.path(), t.filename, actualSize);
+        safResult = await moveToSafDownloads(result.uri, t.filename, actualSize);
       } catch (safErr) {
         console.warn('[DownloadManager] SAF 移动异常（已忽略）:', (safErr as Error)?.message);
       }
       t.localUri = safResult.uri;
       if (safResult.safFailed) {
-        // SAF 失败不影响下载成功状态，文件已保存在应用缓存目录，仍可安装
         t.error = '文件已保存到缓存目录（可正常安装）';
       }
       await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
     } else {
-      t.localUri = res.path();
+      t.localUri = result.uri;
     }
 
     notify(t);
@@ -521,7 +509,7 @@ export async function pause(id: string): Promise<void> {
   // 取消活跃的 session
   const session = activeSessions.get(id);
   if (session) {
-    try { session.cancel(() => {}); } catch { /* ignore */ }
+    session?.cancelAsync?.().catch(() => {});
     activeSessions.delete(id);
   }
 
@@ -547,7 +535,7 @@ export async function cancel(id: string): Promise<void> {
 
   const session = activeSessions.get(id);
   if (session) {
-    try { session.cancel(() => {}); } catch { /* ignore */ }
+    session?.cancelAsync?.().catch(() => {});
     activeSessions.delete(id);
   }
 
@@ -594,7 +582,7 @@ export async function pauseAll(): Promise<void> {
     if (task.status === 'downloading' || task.status === 'pending') {
       const session = activeSessions.get(id);
       if (session) {
-        try { session.cancel(() => {}); } catch { /* ignore */ }
+        session?.cancelAsync?.().catch(() => {});
         activeSessions.delete(id);
       }
       task.status = 'paused';
@@ -621,7 +609,7 @@ export function clearAllTasks(): void {
   for (const [id] of tasks.entries()) {
     const session = activeSessions.get(id);
     if (session) {
-      try { session.cancel(() => {}); } catch { /* ignore */ }
+      session?.cancelAsync?.().catch(() => {});
       activeSessions.delete(id);
     }
     cleanupTempDir(id);
