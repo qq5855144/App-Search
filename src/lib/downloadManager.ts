@@ -11,7 +11,8 @@ import * as _FileSystem from 'expo-file-system/legacy';
 const IS_WEB = Platform.OS === 'web';
 const SAF_URI_KEY = '@openappstore/saf_downloads_uri';
 const MAX_CONCURRENT = 3;
-const SAF_BASE64_MAX_SIZE = 50 * 1024 * 1024;
+// 32MB 以下才走 SAF base64 写入（自身 APK ≈42MB 会绕开，避免低内存静默写 0 字节）
+const SAF_BASE64_MAX_SIZE = 32 * 1024 * 1024;
 const MAX_AUTO_RETRY = 1;
 
 function getFS(): typeof _FileSystem | null {
@@ -69,6 +70,8 @@ export async function hasDownloadsPermission(): Promise<boolean> {
 async function moveToSafDownloads(tempUri: string, filename: string, expectedSize: number): Promise<{ uri: string; safFailed: boolean }> {
   const fs = getFS();
   if (!fs) return { uri: tempUri, safFailed: true };  // 无 FS → 文件仍在 tempDir
+  // destUri 提升到 try 外，catch 块清理时可访问
+  let destUri = '';
   try {
     const dirUri = await loadSafUri();
     if (!dirUri) return { uri: tempUri, safFailed: true };  // 无 SAF 权限 → 文件仍在 tempDir
@@ -86,7 +89,7 @@ async function moveToSafDownloads(tempUri: string, filename: string, expectedSiz
       return { uri: tempUri, safFailed: true };
     }
 
-    const destUri = await fs.StorageAccessFramework.createFileAsync(
+    destUri = await fs.StorageAccessFramework.createFileAsync(
       dirUri, filename, getMimeType(filename)
     );
     const base64 = await fs.readAsStringAsync(tempUri, { encoding: fs.EncodingType.Base64 });
@@ -119,6 +122,10 @@ async function moveToSafDownloads(tempUri: string, filename: string, expectedSiz
     return { uri: destUri, safFailed: false };
   } catch (e) {
     console.warn('[DownloadManager] SAF 移动失败:', (e as Error)?.message);
+    // 主动清理已创建但写入损坏的 SAF 目标文件，避免用户在下载目录看到残留 0B 灰包
+    if (destUri) {
+      await fs.deleteAsync(destUri, { idempotent: true }).catch(() => null);
+    }
     return { uri: tempUri, safFailed: true };
   }
 }
