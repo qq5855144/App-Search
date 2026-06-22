@@ -225,7 +225,13 @@ function isTransientError(msg: string): boolean {
     msg.includes('ECONNRESET') ||
     msg.includes('ECONNREFUSED') ||
     msg.includes('ENOTFOUND') ||
-    msg.includes('socket hang up')
+    msg.includes('socket hang up') ||
+    // GitHub CDN HTTP/2 RST_STREAM CANCEL — Android OkHttp 与 GitHub CDN 的 HTTP/2
+    // 连接被服务端重置，属于暂时性 CDN 问题，重试可恢复
+    msg.includes('stream was reset') ||
+    msg.includes('CANCEL') ||
+    msg.includes('RST_STREAM') ||
+    msg.includes('unexpected end of stream')
   );
 }
 
@@ -499,7 +505,18 @@ async function startTask(id: string) {
       t.speed = 0;
       t.eta = -1;
       notify(t);
-      // ⚠️ 不删 tempDir，不重置进度——保留部分文件用于续传
+      // HTTP/2 RST_STREAM 类错误：CDN 签名 URL 可能已过期
+      // 重试 ≥2 次后清除 resumeData，让下次从头下（拿到新鲜 URL）
+      const isHttp2Reset = msg.includes('stream was reset') || msg.includes('CANCEL') || msg.includes('RST_STREAM');
+      if (isHttp2Reset && (t._autoRetryCount ?? 0) >= 2) {
+        await AsyncStorage.removeItem(resumeKey).catch(() => null);
+        // 同时清除本地部分文件，避免用过期 resumeData 续传乱序
+        await cleanupTempDir(id);
+        t.bytesWritten = 0;
+        t.totalBytes = 0;
+        t.progress = 0;
+      }
+      // ⚠️ 其他瞬态错误：不删 tempDir，保留部分文件用于续传
       flushQueue();
       return;
     }
