@@ -370,8 +370,11 @@ async function startTask(id: string) {
       t.localUri = safResult.uri;
       if (safResult.safFailed) {
         t.error = '文件已保存到缓存目录（可正常安装）';
+      } else {
+        // SAF 成功：文件已移至 Downloads，删除临时目录
+        await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
       }
-      await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
+      // SAF 失败时不删 tempDir：localUri 仍指向 tempDir 内的文件，删了就变灰包
     } else {
       t.localUri = result.uri;
     }
