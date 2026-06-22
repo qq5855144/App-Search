@@ -1,15 +1,13 @@
 /**
- * 下载管理器 v12 — fetch 下载 + 纯 JS base64 编码
+ * 下载管理器 v13 — react-native-blob-util 原生下载
  *
- * 设计决策：
- * 1. 统一用 fetch 下载：原生 HTTP 栈自动跟随 302→CDN，获取真实文件
- * 2. 纯 JS base64 编码：不依赖 btoa(Hermes 不稳定)，逐字节编码，稳定可靠
- * 3. 下载中进度 0%，完成后直接 100%（fetch 无中间进度回调）
- * 4. SAF 保存：Android 完成后写入公共 Downloads
- * 5. 自动重试：临时网络错误自动重试 1 次
+ * react-native-blob-util 使用自己的原生 HTTP 客户端（OkHttp），
+ * 自动跟随 302 重定向，下载直接写入磁盘无需 base64 桥接。
+ * 6 个版本的自研方案均因 expo-file-system 不跟随 302 或 fetch.arrayBuffer 不可用而失败。
  */
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import ReactNativeBlobUtil from 'react-native-blob-util';
 import * as _FileSystem from 'expo-file-system/legacy';
 
 const IS_WEB = Platform.OS === 'web';
@@ -86,7 +84,7 @@ async function moveToSafDownloads(tempUri: string, filename: string, expectedSiz
     }
 
     if (actualSize > SAF_BASE64_MAX_SIZE) {
-      console.warn(`[DownloadManager] ${filename} (${(actualSize / 1024 / 1024).toFixed(1)}MB) 超过 SAF 限制，保留在缓存目录`);
+      console.warn(`[DownloadManager] ${filename} (${(actualSize / 1024 / 1024).toFixed(1)}MB) 超过 SAF 限制，保留在缓存`);
       return { uri: tempUri, safFailed: true };
     }
 
@@ -141,7 +139,7 @@ export function formatBytes(bytes: number): string {
 }
 
 // ─── 类型定义 ─────────────────────────────────────────────────────────────────
-export type DownloadStatus = 'pending' | 'downloading' | 'processing' | 'paused' | 'completed' | 'failed' | 'cancelled';
+export type DownloadStatus = 'pending' | 'downloading' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
 export interface DownloadTask {
   id: string;
@@ -172,13 +170,16 @@ type ProgressCallback = (task: DownloadTask | { id: typeof REFRESH_EVENT }) => v
 // ─── 全局状态 ─────────────────────────────────────────────────────────────────
 const tasks = new Map<string, DownloadTask>();
 const subscribers = new Set<ProgressCallback>();
+/** 活跃的 ReactNativeBlobUtil session，用于取消 */
+const activeSessions = new Map<string, any>();
+const speedSampler = new Map<string, { ts: number; bytes: number }>();
 
 function genId(): string { return `dl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`; }
 function notify(task: DownloadTask) { subscribers.forEach((cb) => cb({ ...task })); }
 function notifyRefresh() { subscribers.forEach((cb) => cb({ id: REFRESH_EVENT })); }
 
 function flushQueue() {
-  const active = [...tasks.values()].filter((t) => t.status === 'downloading' || t.status === 'processing').length;
+  const active = [...tasks.values()].filter((t) => t.status === 'downloading').length;
   if (active >= MAX_CONCURRENT) return;
   const next = [...tasks.values()].find((t) => t.status === 'pending');
   if (next) startTask(next.id);
@@ -224,44 +225,12 @@ async function cleanupTempDir(id: string) {
   await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
 }
 
-// ─── 纯 JS base64 编码 ────────────────────────────────────────────────────────
-
-/**
- * 将 ArrayBuffer 编码为 base64 字符串。
- * 纯 JavaScript 实现，不依赖 btoa（Hermes 对二进制大字符串不稳定）。
- * 分块处理避免长时间阻塞 UI 线程。
- */
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  const len = bytes.length;
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  const chunks: string[] = [];
-  const CHUNK_SIZE = 0x8000; // 32KB 输入 → ~43KB 输出
-
-  for (let offset = 0; offset < len; offset += CHUNK_SIZE) {
-    const end = Math.min(offset + CHUNK_SIZE, len);
-    let result = '';
-    for (let i = offset; i < end; i += 3) {
-      const a = bytes[i];
-      const b = i + 1 < len ? bytes[i + 1] : 0;
-      const c = i + 2 < len ? bytes[i + 2] : 0;
-      result += chars[a >> 2];
-      result += chars[((a & 3) << 4) | (b >> 4)];
-      result += (i + 1 < len) ? chars[((b & 15) << 2) | (c >> 6)] : '=';
-      result += (i + 2 < len) ? chars[c & 63] : '=';
-    }
-    chunks.push(result);
-  }
-  return chunks.join('');
-}
-
 // ─── 核心下载逻辑 ─────────────────────────────────────────────────────────────
 
 async function startTask(id: string) {
   const task = tasks.get(id);
   if (!task) return;
 
-  // Web 端：浏览器打开
   if (IS_WEB) {
     task.status = 'completed';
     task.progress = 1;
@@ -289,73 +258,116 @@ async function startTask(id: string) {
   task.eta = -1;
   notify(task);
 
+  // react-native-blob-util 配置：下载到指定路径，带进度回调
+  const session = ReactNativeBlobUtil.config({
+    path: localUri,
+    fileCache: false, // 不自动管理缓存，我们手动管理
+  }).fetch('GET', task.url, {
+    'Cache-Control': 'no-cache',
+  });
+
+  activeSessions.set(id, session);
+
+  // 进度回调
+  session.progress({ count: 10, interval: 250 }, (received: number, total: number) => {
+    const t = tasks.get(id);
+    if (!t || t.status !== 'downloading') return;
+
+    const now = Date.now();
+    const prev = speedSampler.get(id) ?? { ts: now, bytes: 0 };
+    const elapsed = (now - prev.ts) / 1000;
+
+    let speed = t.speed;
+    if (elapsed >= 0.5) {
+      const bytesDelta = parseInt(received as any, 10) - prev.bytes;
+      speed = elapsed > 0 ? Math.round(bytesDelta / elapsed) : 0;
+      speedSampler.set(id, { ts: now, bytes: parseInt(received as any, 10) });
+    }
+
+    t.bytesWritten = parseInt(received as any, 10);
+    const hasTotal = parseInt(total as any, 10) > 0;
+    if (hasTotal) {
+      t.totalBytes = parseInt(total as any, 10);
+      t.progress = parseInt(received as any, 10) / parseInt(total as any, 10);
+    } else {
+      t.progress = parseInt(received as any, 10) > 0
+        ? Math.min(0.99, 1 - 1 / (parseInt(received as any, 10) / 1024 + 1))
+        : 0;
+    }
+    t.speed = speed > 0 ? speed : 0;
+    t.eta = (speed > 0 && hasTotal)
+      ? Math.round((parseInt(total as any, 10) - parseInt(received as any, 10)) / speed)
+      : -1;
+
+    notify(t);
+  });
+
   try {
-    // fetch 下载：原生 HTTP 栈自动跟随 302→CDN，获取真实文件
-    const response = await fetch(task.url, {
-      method: 'GET',
-      headers: { 'Cache-Control': 'no-cache' },
-    });
+    const res = await session;
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const arrayBuffer = await response.arrayBuffer();
-    const byteLength = arrayBuffer.byteLength;
-
-    // 空文件
-    if (byteLength === 0) {
-      throw new Error('下载内容为空');
-    }
-
-    // 检测 HTML 错误页面（GitHub 可能返回 200 但内容是 HTML）
-    if (byteLength < 1024) {
-      const header = new TextDecoder().decode(arrayBuffer.slice(0, Math.min(512, byteLength)));
-      if (header.trimStart().startsWith('<!') || header.trimStart().startsWith('<html')) {
-        throw new Error('服务器返回了网页而非文件，请重试');
-      }
-    }
-
-    // 转为 base64 写入磁盘
-    task.status = 'processing';
-    task.progress = 0.99;
-    notify(task);
-
-    const base64 = arrayBufferToBase64(arrayBuffer);
-    await fs.writeAsStringAsync(localUri, base64, {
-      encoding: fs.EncodingType.Base64,
-    });
+    activeSessions.delete(id);
+    speedSampler.delete(id);
 
     const t = tasks.get(id);
     if (!t) return;
+
+    const respInfo = res.info();
+    const status = respInfo.status;
+
+    if (status !== 200) {
+      t.status = 'failed';
+      t.error = `HTTP ${status}`;
+      notify(t);
+      await cleanupTempDir(id);
+      flushQueue();
+      return;
+    }
+
+    // 获取实际文件大小
+    let actualSize = 0;
+    try {
+      const info = await fs.getInfoAsync(res.path());
+      actualSize = (info as any).size ?? 0;
+    } catch { /* ignore */ }
+
+    if (actualSize === 0) {
+      t.status = 'failed';
+      t.error = '下载文件大小为 0，请重试';
+      notify(t);
+      await cleanupTempDir(id);
+      flushQueue();
+      return;
+    }
 
     t.status = 'completed';
     t.progress = 1;
     t.speed = 0;
     t.eta = 0;
-    t.bytesWritten = byteLength;
-    t.totalBytes = byteLength;
+    t.bytesWritten = actualSize;
+    t.totalBytes = actualSize;
 
     if (Platform.OS === 'android') {
-      const { uri, safFailed } = await moveToSafDownloads(localUri, t.filename, byteLength);
+      const { uri, safFailed } = await moveToSafDownloads(res.path(), t.filename, actualSize);
       t.localUri = uri;
       if (safFailed) {
         t.error = '文件保存在应用缓存目录（未授权公共存储权限）';
       }
       await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
     } else {
-      t.localUri = localUri;
+      t.localUri = res.path();
     }
 
     notify(t);
     flushQueue();
   } catch (e: any) {
+    activeSessions.delete(id);
+    speedSampler.delete(id);
+
     const t = tasks.get(id);
     if (!t) { flushQueue(); return; }
 
     const msg: string = e?.message ?? '';
 
-    // 自动重试
     if (isTransientError(msg) && (t._autoRetryCount ?? 0) < MAX_AUTO_RETRY) {
       t._autoRetryCount = (t._autoRetryCount ?? 0) + 1;
       t.status = 'pending';
@@ -402,7 +414,7 @@ export function enqueue(params: {
     throw new Error('下载链接无效');
   }
   const existing = findTaskByUrl(params.url);
-  if (existing && ['pending', 'downloading', 'processing', 'paused'].includes(existing.status)) {
+  if (existing && ['pending', 'downloading', 'paused'].includes(existing.status)) {
     return existing.id;
   }
   if (existing && ['completed', 'failed'].includes(existing.status)) {
@@ -446,9 +458,18 @@ export function retry(oldId: string): string {
 export async function pause(id: string): Promise<void> {
   const task = tasks.get(id);
   if (!task || task.status !== 'downloading') return;
+
+  // 取消活跃的 session
+  const session = activeSessions.get(id);
+  if (session) {
+    try { session.cancel(() => {}); } catch { /* ignore */ }
+    activeSessions.delete(id);
+  }
+
   task.status = 'paused';
   task.speed = 0;
   task.eta = -1;
+  speedSampler.delete(id);
   notify(task);
 }
 
@@ -464,7 +485,15 @@ export async function resume(id: string): Promise<void> {
 export async function cancel(id: string): Promise<void> {
   const task = tasks.get(id);
   if (!task) return;
+
+  const session = activeSessions.get(id);
+  if (session) {
+    try { session.cancel(() => {}); } catch { /* ignore */ }
+    activeSessions.delete(id);
+  }
+
   task.status = 'cancelled';
+  speedSampler.delete(id);
   await cleanupTempDir(id);
   notify(task);
   tasks.delete(id);
@@ -475,7 +504,7 @@ export async function deleteFile(id: string): Promise<void> {
   const task = tasks.get(id);
   if (!task) return;
 
-  if (['downloading', 'processing', 'pending'].includes(task.status)) {
+  if (['downloading', 'pending'].includes(task.status)) {
     await cancel(id);
     notifyRefresh();
     return;
@@ -487,6 +516,7 @@ export async function deleteFile(id: string): Promise<void> {
   }
 
   tasks.delete(id);
+  speedSampler.delete(id);
   notifyRefresh();
 }
 
@@ -494,17 +524,24 @@ export function clearFinished(): void {
   for (const [id, task] of tasks.entries()) {
     if (['completed', 'failed', 'cancelled'].includes(task.status)) {
       tasks.delete(id);
+      speedSampler.delete(id);
     }
   }
   notifyRefresh();
 }
 
 export async function pauseAll(): Promise<void> {
-  for (const [, task] of tasks) {
+  for (const [id, task] of tasks) {
     if (task.status === 'downloading' || task.status === 'pending') {
+      const session = activeSessions.get(id);
+      if (session) {
+        try { session.cancel(() => {}); } catch { /* ignore */ }
+        activeSessions.delete(id);
+      }
       task.status = 'paused';
       task.speed = 0;
       task.eta = -1;
+      speedSampler.delete(id);
       notify(task);
     }
   }
@@ -523,8 +560,14 @@ export function resumeAll(): void {
 
 export function clearAllTasks(): void {
   for (const [id] of tasks.entries()) {
+    const session = activeSessions.get(id);
+    if (session) {
+      try { session.cancel(() => {}); } catch { /* ignore */ }
+      activeSessions.delete(id);
+    }
     cleanupTempDir(id);
   }
   tasks.clear();
+  speedSampler.clear();
   notifyRefresh();
 }
