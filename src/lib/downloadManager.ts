@@ -16,7 +16,8 @@ const SAF_BASE64_MAX_SIZE = 32 * 1024 * 1024;
 // 超大文件（>32MB）下载后移入持久存储目录（documentDirectory/dl_perm/）
 // 与 tempDir (dl_<id>/) 隔离，系统不会自动清理，且可通过 FileProvider 安装
 const PERM_DIR_NAME = 'dl_perm';
-const MAX_AUTO_RETRY = 1;
+const MAX_AUTO_RETRY = 5;                              // 最多自动续传 5 次
+const RESUME_KEY_PREFIX = '@openappstore/resume_';     // AsyncStorage 断点数据 key
 
 function getFS(): typeof _FileSystem | null {
   return IS_WEB ? null : _FileSystem;
@@ -288,19 +289,38 @@ async function startTask(id: string) {
 
   const tempDir = `${fs.documentDirectory ?? ''}dl_${id}/`;
   const localUri = `${tempDir}${task.filename}`;
+  const resumeKey = `${RESUME_KEY_PREFIX}${id}`;
 
   await fs.makeDirectoryAsync(tempDir, { intermediates: true }).catch(() => null);
 
+  // ── 加载断点续传数据 ────────────────────────────────────────────────────────
+  let resumeData: string | undefined;
+  try {
+    const saved = await AsyncStorage.getItem(resumeKey);
+    if (saved) {
+      // 确认部分文件仍存在，否则清除断点并从头下载
+      const info = await fs.getInfoAsync(localUri).catch(() => ({ exists: false }));
+      resumeData = info.exists ? saved : undefined;
+      if (!info.exists) await AsyncStorage.removeItem(resumeKey).catch(() => null);
+    }
+  } catch { /* ignore */ }
+
   task.status = 'downloading';
   task.error = null;
-  task.progress = 0;
-  task.bytesWritten = 0;
-  task.totalBytes = 0;
+  if (!resumeData) {
+    // 全新下载时才重置进度，续传时保留已显示的进度
+    task.progress = 0;
+    task.bytesWritten = 0;
+    task.totalBytes = 0;
+  }
   task.speed = 0;
   task.eta = -1;
   notify(task);
 
   // ── expo-file-system createDownloadResumable（直接传原始 URL，底层自动跟随 302）───
+  let lastSaveTs = 0;
+  let resumableRef: _FileSystem.DownloadResumable | null = null;
+
   const progressCallback = (dp: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => {
     const t = tasks.get(id);
     if (!t || t.status !== 'downloading') return;
@@ -325,6 +345,17 @@ async function startTask(id: string) {
       : -1;
 
     notify(t);
+
+    // 每 3 秒持久化一次断点数据，应用崩溃后也能续传
+    if (now - lastSaveTs > 3000 && resumableRef) {
+      lastSaveTs = now;
+      try {
+        const state = resumableRef.savable();
+        if (state.resumeData) {
+          AsyncStorage.setItem(resumeKey, JSON.stringify(state.resumeData)).catch(() => null);
+        }
+      } catch { /* ignore */ }
+    }
   };
 
   const resumable = fs.createDownloadResumable(
@@ -332,29 +363,41 @@ async function startTask(id: string) {
     localUri,
     { headers: { 'User-Agent': 'OpenAppStore/1.0' } },
     progressCallback,
+    resumeData ? JSON.parse(resumeData) : undefined,
   );
+  resumableRef = resumable;
   activeSessions.set(id, resumable);
 
-  // ── 卡顿检测：60s 无字节增量则取消并自动重试 ─────────────────────────────
+  // ── 卡顿检测：60s 无字节增量则保存断点并自动续传 ──────────────────────────
   let lastBytesForStall = 0;
   const stallTimer = setInterval(() => {
     const t = tasks.get(id);
     if (!t || t.status !== 'downloading') { clearInterval(stallTimer); return; }
     if (t.bytesWritten === lastBytesForStall) {
       clearInterval(stallTimer);
+      // 卡顿时先保存当前断点
+      try {
+        const state = resumableRef?.savable();
+        if (state?.resumeData) {
+          AsyncStorage.setItem(resumeKey, JSON.stringify(state.resumeData)).catch(() => null);
+        }
+      } catch { /* ignore */ }
       activeSessions.get(id)?.cancelAsync?.().catch(() => {});
       activeSessions.delete(id);
       if ((t._autoRetryCount ?? 0) < MAX_AUTO_RETRY) {
         t._autoRetryCount = (t._autoRetryCount ?? 0) + 1;
         t.status = 'pending';
-        t.error = `下载无响应，自动重试 (${t._autoRetryCount}/${MAX_AUTO_RETRY})...`;
-        t.progress = 0; t.speed = 0; t.eta = -1;
+        t.error = `网络中断，自动续传 (${t._autoRetryCount}/${MAX_AUTO_RETRY})...`;
+        t.speed = 0; t.eta = -1;
+        // ⚠️ 不删 tempDir，不重置进度——保留部分文件用于续传
       } else {
         t.status = 'failed';
         t.error = '下载超时，请检查网络后手动重试';
+        AsyncStorage.removeItem(resumeKey).catch(() => null);
+        cleanupTempDir(id);
       }
       notify(t);
-      cleanupTempDir(id).then(() => flushQueue());
+      flushQueue();
     } else {
       lastBytesForStall = t.bytesWritten;
     }
@@ -366,6 +409,9 @@ async function startTask(id: string) {
     clearInterval(stallTimer);
     activeSessions.delete(id);
     speedSampler.delete(id);
+    resumableRef = null;
+    // 下载完成，清除断点数据
+    await AsyncStorage.removeItem(resumeKey).catch(() => null);
 
     const t = tasks.get(id);
     if (!t) return;
@@ -416,17 +462,16 @@ async function startTask(id: string) {
         try {
           const permUri = await moveToPermanentStorage(safResult.uri, t.filename);
           t.localUri = permUri;
-          t.error = null; // 持久存储成功，清除错误提示
+          t.error = null;
         } catch (mvErr) {
           console.warn('[DownloadManager] 持久化移动失败，保留 tempDir:', (mvErr as Error)?.message);
-          t.localUri = safResult.uri; // 降级：保留 tempDir 内的原始路径
+          t.localUri = safResult.uri;
           t.error = '文件已保存到缓存目录（可正常安装）';
         }
       } else {
         t.localUri = safResult.uri;
       }
-      // 只有文件实际被移出 tempDir 才删除临时目录，与 safFailed 标志解耦
-      // 防止 safFailed=false 但 uri 仍在 tempDir 时误删（如 !dirUri 分支）
+      // 只有文件实际被移出 tempDir 才删除临时目录
       if (!t.localUri!.startsWith(tempDir)) {
         await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
       }
@@ -440,6 +485,7 @@ async function startTask(id: string) {
     clearInterval(stallTimer);
     activeSessions.delete(id);
     speedSampler.delete(id);
+    resumableRef = null;
 
     const t = tasks.get(id);
     if (!t) { flushQueue(); return; }
@@ -449,19 +495,20 @@ async function startTask(id: string) {
     if (isTransientError(msg) && (t._autoRetryCount ?? 0) < MAX_AUTO_RETRY) {
       t._autoRetryCount = (t._autoRetryCount ?? 0) + 1;
       t.status = 'pending';
-      t.error = `网络波动，自动重试中 (${t._autoRetryCount}/${MAX_AUTO_RETRY})...`;
-      t.progress = 0;
+      t.error = `网络波动，自动续传中 (${t._autoRetryCount}/${MAX_AUTO_RETRY})...`;
       t.speed = 0;
       t.eta = -1;
       notify(t);
-      await cleanupTempDir(id);
+      // ⚠️ 不删 tempDir，不重置进度——保留部分文件用于续传
       flushQueue();
       return;
     }
 
+    // 重试耗尽才清理
     t.status = 'failed';
     t.error = mapErrorMessage(msg);
     notify(t);
+    await AsyncStorage.removeItem(resumeKey).catch(() => null);
     await cleanupTempDir(id);
     flushQueue();
   }
