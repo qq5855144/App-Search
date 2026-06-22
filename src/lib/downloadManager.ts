@@ -13,6 +13,9 @@ const SAF_URI_KEY = '@openappstore/saf_downloads_uri';
 const MAX_CONCURRENT = 3;
 // 32MB 以下才走 SAF base64 写入（自身 APK ≈42MB 会绕开，避免低内存静默写 0 字节）
 const SAF_BASE64_MAX_SIZE = 32 * 1024 * 1024;
+// 超大文件（>32MB）下载后移入持久存储目录（documentDirectory/dl_perm/）
+// 与 tempDir (dl_<id>/) 隔离，系统不会自动清理，且可通过 FileProvider 安装
+const PERM_DIR_NAME = 'dl_perm';
 const MAX_AUTO_RETRY = 1;
 
 function getFS(): typeof _FileSystem | null {
@@ -252,6 +255,18 @@ async function cleanupTempDir(id: string) {
   await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
 }
 
+/** 将文件从 tempDir 移入持久存储（documentDirectory/dl_perm/），返回新 URI */
+async function moveToPermanentStorage(tempUri: string, filename: string): Promise<string> {
+  const fs = getFS()!;
+  const permDir = `${fs.documentDirectory ?? ''}${PERM_DIR_NAME}/`;
+  await fs.makeDirectoryAsync(permDir, { intermediates: true }).catch(() => null);
+  const destUri = `${permDir}${filename}`;
+  // 目标已存在则先删除（同名旧版本）
+  await fs.deleteAsync(destUri, { idempotent: true }).catch(() => null);
+  await fs.moveAsync({ from: tempUri, to: destUri });
+  return destUri;
+}
+
 // ─── 核心下载逻辑 ─────────────────────────────────────────────────────────────
 
 async function startTask(id: string) {
@@ -396,13 +411,23 @@ async function startTask(id: string) {
       } catch (safErr) {
         console.warn('[DownloadManager] SAF 移动异常（已忽略）:', (safErr as Error)?.message);
       }
-      t.localUri = safResult.uri;
       if (safResult.safFailed) {
-        t.error = '文件已保存到缓存目录（可正常安装）';
+        // 大文件或 SAF 失败：移入持久存储，避免 tempDir 被系统回收
+        try {
+          const permUri = await moveToPermanentStorage(safResult.uri, t.filename);
+          t.localUri = permUri;
+          t.error = null; // 持久存储成功，清除错误提示
+        } catch (mvErr) {
+          console.warn('[DownloadManager] 持久化移动失败，保留 tempDir:', (mvErr as Error)?.message);
+          t.localUri = safResult.uri; // 降级：保留 tempDir 内的原始路径
+          t.error = '文件已保存到缓存目录（可正常安装）';
+        }
+      } else {
+        t.localUri = safResult.uri;
       }
       // 只有文件实际被移出 tempDir 才删除临时目录，与 safFailed 标志解耦
       // 防止 safFailed=false 但 uri 仍在 tempDir 时误删（如 !dirUri 分支）
-      if (!safResult.uri.startsWith(tempDir)) {
+      if (!t.localUri!.startsWith(tempDir)) {
         await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
       }
     } else {
