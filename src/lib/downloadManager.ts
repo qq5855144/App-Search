@@ -1,16 +1,20 @@
 /**
- * 下载管理器 v17 — Android 切 OkHttp3 (react-native-blob-util)，彻底解决 HTTP/2 RST_STREAM
+ * 下载管理器 v18 — 清理 SAF 死代码，健壮 pauseAll/clearAllTasks
  *
  * 引擎选择：
  *  - Android : react-native-blob-util (OkHttp3) — 与浏览器/系统下载管理器同层 HTTP 栈
- *  - iOS     : expo-file-system (NSURLSession) — 原生 iOS 网络层，稳定高效
+ *  - iOS     : expo-file-system (NSURLSession) — 原生 iOS 网络层，断点续传
  *  - Web     : window.open() 交给浏览器
  *
- * 策略：
- *  1. 始终使用 task.url（github.com 原始链接），底层跟随 302 重定向到 CDN
- *  2. 下载完成后统一 moveAsync → dl_perm/，通过 FileProvider content:// 安装
- *  3. 瞬态错误（断网/超时/RST_STREAM）：自动重试，最多 5 次
- *  4. Android 进度来自 OkHttp3 的字节写入回调，iOS 来自 NSURLSession
+ * 存储策略：
+ *  - 文件统一下载到 documentDirectory/dl_${id}/ 临时目录
+ *  - 完成后 moveAsync → dl_perm/，通过 FileProvider content:// 暴露给安装器
+ *  - 无需 SAF/公共 Downloads 权限（app-private 存储，Android 7+ 免权限）
+ *
+ * 重试策略：
+ *  - Android：每次重试从头下载（OkHttp3 无内置断点续传接口）
+ *  - iOS：保留 resumeData，NSURLSession 字节级续传
+ *  - 最多自动重试 5 次，瞬态错误（断网/超时/RST_STREAM）自动恢复
  */
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -18,63 +22,13 @@ import * as _FileSystem from 'expo-file-system/legacy';
 import RNBlobUtil from 'react-native-blob-util';
 
 const IS_WEB = Platform.OS === 'web';
-const SAF_URI_KEY = '@openappstore/saf_downloads_uri';
 const MAX_CONCURRENT = 3;
-// 所有文件（不论大小）统一移入持久目录，通过 FileProvider 安装
 const PERM_DIR_NAME = 'dl_perm';
-const MAX_AUTO_RETRY = 5;                              // 最多自动续传 5 次
-const RESUME_KEY_PREFIX = '@openappstore/resume_';     // AsyncStorage 断点数据 key
+const MAX_AUTO_RETRY = 5;
+const RESUME_KEY_PREFIX = '@openappstore/resume_'; // iOS 断点续传 key
 
 function getFS(): typeof _FileSystem | null {
   return IS_WEB ? null : _FileSystem;
-}
-
-// ─── SAF ─────────────────────────────────────────────────────────────────────
-let _safDirUri: string | null | undefined = undefined;
-
-async function loadSafUri(): Promise<string | null> {
-  if (_safDirUri !== undefined) return _safDirUri;
-  const stored = await AsyncStorage.getItem(SAF_URI_KEY).catch(() => null);
-  const fs = getFS();
-  if (!fs) { _safDirUri = null; return null; }
-  if (stored) {
-    try {
-      await fs.StorageAccessFramework.readDirectoryAsync(stored);
-      _safDirUri = stored;
-      return stored;
-    } catch {
-      _safDirUri = null;
-      await AsyncStorage.removeItem(SAF_URI_KEY).catch(() => null);
-    }
-  } else {
-    _safDirUri = null;
-  }
-  return null;
-}
-
-export async function requestDownloadsPermission(): Promise<boolean> {
-  if (Platform.OS !== 'android') return false;
-  const fs = getFS();
-  if (!fs) return false;
-  try {
-    const result = await fs.StorageAccessFramework.requestDirectoryPermissionsAsync(
-      'content://com.android.externalstorage.documents/tree/primary%3ADownload'
-    );
-    if (!result.granted) return false;
-    _safDirUri = result.directoryUri;
-    await AsyncStorage.setItem(SAF_URI_KEY, result.directoryUri).catch(() => null);
-    return true;
-  } catch { return false; }
-}
-
-export async function resetDownloadsPermission(): Promise<void> {
-  _safDirUri = null;
-  await AsyncStorage.removeItem(SAF_URI_KEY).catch(() => null);
-}
-
-export async function hasDownloadsPermission(): Promise<boolean> {
-  if (Platform.OS !== 'android') return false;
-  return (await loadSafUri()) !== null;
 }
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
@@ -712,11 +666,12 @@ export function clearFinished(): void {
 export async function pauseAll(): Promise<void> {
   for (const [id, task] of tasks) {
     if (task.status === 'downloading' || task.status === 'pending') {
+      // iOS
       const session = activeSessions.get(id);
-      if (session) {
-        session?.cancelAsync?.().catch(() => {});
-        activeSessions.delete(id);
-      }
+      if (session) { session?.cancelAsync?.().catch(() => {}); activeSessions.delete(id); }
+      // Android
+      const rnbTask = activeRnbTasks.get(id);
+      if (rnbTask) { rnbTask.cancel?.(); activeRnbTasks.delete(id); }
       task.status = 'paused';
       task.speed = 0;
       task.eta = -1;
@@ -731,6 +686,10 @@ export function resumeAll(): void {
     if (task.status === 'paused') {
       task.status = 'pending';
       task.error = null;
+      // Android 无断点，重置进度从头下
+      if (Platform.OS === 'android') {
+        task.progress = 0; task.bytesWritten = 0; task.totalBytes = 0;
+      }
       notify(task);
     }
   }
@@ -739,11 +698,12 @@ export function resumeAll(): void {
 
 export function clearAllTasks(): void {
   for (const [id] of tasks.entries()) {
+    // iOS
     const session = activeSessions.get(id);
-    if (session) {
-      session?.cancelAsync?.().catch(() => {});
-      activeSessions.delete(id);
-    }
+    if (session) { session?.cancelAsync?.().catch(() => {}); activeSessions.delete(id); }
+    // Android
+    const rnbTask = activeRnbTasks.get(id);
+    if (rnbTask) { rnbTask.cancel?.(); activeRnbTasks.delete(id); }
     cleanupTempDir(id);
   }
   tasks.clear();

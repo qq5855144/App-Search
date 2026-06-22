@@ -27,22 +27,18 @@ interface DownloadContextValue {
   resumeAll: () => void;
   findByUrl: (url: string) => DownloadTask | undefined;
   activeCount: number;
-  safGranted: boolean;
-  requestDownloadsPermission: () => Promise<boolean>;
-  refreshSafStatus: () => Promise<void>;
 }
 
 const DownloadContext = createContext<DownloadContextValue | null>(null);
 
 export function DownloadProvider({ children }: { children: React.ReactNode }) {
   const [tasks, setTasks] = useState<DownloadTask[]>(() => DM.getAllTasks());
-  const [safGranted, setSafGranted] = useState(false);
   const pendingRef = useRef(false);
   const lastNotifState = useRef<Map<string, { status: string; progress: number }>>(new Map());
+  const notifRequestedRef = useRef(false);
 
   useEffect(() => {
     const unsubscribe = DM.subscribe((task) => {
-      // 使用 Symbol REFRESH_EVENT 替代魔法字符串
       if ((task as any).id === REFRESH_EVENT) {
         setTasks(DM.getAllTasks());
         return;
@@ -57,24 +53,29 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
         const currKey = `${downloadTask.status}_${Math.round(downloadTask.progress * 10)}`;
 
         if (currKey !== prevKey) {
-          lastNotifState.current.set(downloadTask.id, { status: downloadTask.status, progress: downloadTask.progress });
-
+          lastNotifState.current.set(downloadTask.id, {
+            status: downloadTask.status, progress: downloadTask.progress,
+          });
           if (downloadTask.status === 'downloading' && downloadTask.progress > 0) {
             showSystemProgress({
-              id: downloadTask.id, appName: downloadTask.appName, progress: downloadTask.progress,
-              speed: downloadTask.speed, multiThreaded: false,
+              id: downloadTask.id, appName: downloadTask.appName,
+              progress: downloadTask.progress, speed: downloadTask.speed, multiThreaded: false,
             }).catch(() => {});
           } else if (downloadTask.status === 'completed') {
-            showSystemComplete({ id: downloadTask.id, appName: downloadTask.appName, totalBytes: downloadTask.totalBytes }).catch(() => {});
+            showSystemComplete({
+              id: downloadTask.id, appName: downloadTask.appName, totalBytes: downloadTask.totalBytes,
+            }).catch(() => {});
           } else if (downloadTask.status === 'failed') {
-            showSystemFailed({ id: downloadTask.id, appName: downloadTask.appName, error: downloadTask.error }).catch(() => {});
+            showSystemFailed({
+              id: downloadTask.id, appName: downloadTask.appName, error: downloadTask.error,
+            }).catch(() => {});
           } else if (downloadTask.status === 'cancelled') {
             dismissSystemNotification(downloadTask.id).catch(() => {});
           }
         }
       }
 
-      // 防抖更新 UI（150ms）
+      // 防抖 150ms 批量更新 UI
       if (pendingRef.current) return;
       pendingRef.current = true;
       setTimeout(() => {
@@ -83,35 +84,11 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
       }, 150);
     });
 
-    // 初始化时检查 SAF 权限状态
-    if (Platform.OS === 'android') {
-      DM.hasDownloadsPermission().then((has) => setSafGranted(has));
-    }
     return unsubscribe;
   }, []);
 
-  const refreshSafStatus = async () => {
-    if (Platform.OS === 'android') {
-      const has = await DM.hasDownloadsPermission();
-      setSafGranted(has);
-    }
-  };
-
-  const activeCount = tasks.filter(
-    (t) => t.status === 'pending' || t.status === 'downloading'
-  ).length;
-
-  const notifRequestedRef = useRef(false);
-
-  /** 入队：Android 先确保 SAF 权限再开始下载 */
-  const enqueueWithSaf = async (params: Parameters<typeof DM.enqueue>[0]): Promise<string> => {
-    // Android：若未授权，先弹目录选择器
-    if (Platform.OS === 'android' && !safGranted) {
-      const granted = await DM.requestDownloadsPermission();
-      setSafGranted(granted);
-      // 权限被拒也继续下载（文件保留在缓存目录），但用户会看到提示
-    }
-    // 首次下载时懒请求通知权限（iOS/Android）
+  /** 入队：首次下载时懒请求通知权限 */
+  const enqueueWithNotif = async (params: Parameters<typeof DM.enqueue>[0]): Promise<string> => {
     if (Platform.OS !== 'web' && !notifRequestedRef.current) {
       notifRequestedRef.current = true;
       getNotificationPermissionStatus().then((s) => {
@@ -121,15 +98,13 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     return DM.enqueue(params);
   };
 
-  const requestDownloadsPermissionAndRefresh = async (): Promise<boolean> => {
-    const granted = await DM.requestDownloadsPermission();
-    setSafGranted(granted);
-    return granted;
-  };
+  const activeCount = tasks.filter(
+    (t) => t.status === 'pending' || t.status === 'downloading',
+  ).length;
 
   const value: DownloadContextValue = {
     tasks,
-    enqueue: enqueueWithSaf,
+    enqueue: enqueueWithNotif,
     retry: DM.retry,
     pause: DM.pause,
     resume: DM.resume,
@@ -141,9 +116,6 @@ export function DownloadProvider({ children }: { children: React.ReactNode }) {
     resumeAll: DM.resumeAll,
     findByUrl: DM.findTaskByUrl,
     activeCount,
-    safGranted,
-    requestDownloadsPermission: requestDownloadsPermissionAndRefresh,
-    refreshSafStatus,
   };
 
   return (

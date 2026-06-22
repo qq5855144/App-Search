@@ -1,15 +1,14 @@
 /**
- * 下载管理页面
+ * 下载管理页面 v2
  *
  * 功能：
- * - 进行中：进度、速度、暂停/恢复/取消
+ * - 进行中：进度环 + 进度条、速度/ETA、暂停（仅 iOS）/恢复/取消/重试
  * - 已完成：文件大小、安装/打开/删除
- * - 已安装：显示所有通过本应用下载并安装的软件，支持检查更新/忽略更新/移除
- * - 通知权限状态提示
- * - 断点续传、全部暂停/恢复、批量清除
+ * - 已安装：检查更新/忽略/移除记录
+ * - 通知权限提示条
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, FlatList, Pressable, ActivityIndicator, Platform, ScrollView, AppState } from 'react-native';
+import { View, Text, FlatList, Pressable, ActivityIndicator, Platform, AppState } from 'react-native';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useAndroidGoBack } from '@/hooks/useAndroidGoBack';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -17,7 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Svg, { Circle } from 'react-native-svg';
 import { useDownload } from '@/ctx/DownloadContext';
 import { useUpdate } from '@/ctx/UpdateContext';
-import { formatSpeed, formatBytes, isInstallerFile } from '@/lib/downloadManager';
+import { formatSpeed, formatBytes, isInstallerFile, getMimeType } from '@/lib/downloadManager';
 import { normalizeVersion } from '@/lib/github';
 import {
   getInstalledApps, ignoreInstalledUpdate, removeInstalledApp,
@@ -37,7 +36,6 @@ type TabKey = 'active' | 'done' | 'installed';
 
 // ── 进度环 ────────────────────────────────────────────────
 function ProgressCircle({ progress, status }: { progress: number; status: string }) {
-  // progress=-1 表示文件大小未知（服务端无 Content-Length），显示不定进度动画
   const isIndeterminate = progress < 0 && status === 'downloading';
   const offset = isIndeterminate ? 0 : CIRCUMFERENCE * (1 - Math.min(progress, 1));
   const color = status === 'failed' ? RED : status === 'completed' ? GREEN : BLUE;
@@ -66,6 +64,17 @@ function ProgressCircle({ progress, status }: { progress: number; status: string
           />
         </View>
       )}
+    </View>
+  );
+}
+
+// ── 细进度条 ──────────────────────────────────────────────
+function ProgressBar({ progress }: { progress: number }) {
+  if (progress <= 0) return null;
+  const pct = Math.min(progress, 1) * 100;
+  return (
+    <View style={{ height: 3, backgroundColor: '#EBEBEB', borderRadius: 2, marginTop: 6, overflow: 'hidden' }}>
+      <View style={{ width: `${pct}%`, height: '100%', backgroundColor: BLUE, borderRadius: 2 }} />
     </View>
   );
 }
@@ -120,18 +129,17 @@ export default function DownloadsScreen() {
 
   const router = useRouter();
   const { tab: initTab } = useLocalSearchParams<{ tab?: string }>();
-  const { tasks, pause, resume, cancel, deleteFile, clearFinished, pauseAll, resumeAll, retry,
-    safGranted, requestDownloadsPermission, refreshSafStatus } = useDownload();
+  const { tasks, pause, resume, cancel, deleteFile, clearFinished, pauseAll, resumeAll, retry } = useDownload();
   const { pendingCount, checking, refresh: refreshUpdateCount } = useUpdate();
 
   const [tab, setTab] = useState<TabKey>(() =>
-    initTab === 'installed' || initTab === 'done' || initTab === 'active' ? initTab : 'active'
+    initTab === 'installed' || initTab === 'done' || initTab === 'active' ? initTab : 'active',
   );
   const [installed, setInstalled] = useState<InstalledApp[]>([]);
   const [installedLoading, setInstalledLoading] = useState(false);
   const [notifStatus, setNotifStatus] = useState<'granted' | 'denied' | 'undetermined' | 'unavailable'>('undetermined');
-  const [confirmClear, setConfirmClear] = useState<'finished' | null>(null);
-  const [requestingPerm, setRequestingPerm] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [installingId, setInstallingId] = useState<string | null>(null);
 
   const activeTasks = tasks.filter(
     (t) => t.status === 'pending' || t.status === 'downloading' || t.status === 'paused',
@@ -141,7 +149,6 @@ export default function DownloadsScreen() {
   );
   const allPaused = activeTasks.length > 0 && activeTasks.every((t) => t.status === 'paused');
 
-  // 有更新且未忽略的应用
   const updatableApps = installed.filter((a) => {
     if (!a.latest_version) return false;
     if (a.latest_version === a.installed_version) return false;
@@ -161,7 +168,6 @@ export default function DownloadsScreen() {
 
   useFocusEffect(useCallback(() => {
     (async () => {
-      await refreshSafStatus();
       if (Platform.OS !== 'web') {
         const s = await getNotificationPermissionStatus();
         setNotifStatus(s);
@@ -174,19 +180,43 @@ export default function DownloadsScreen() {
     if (tab === 'installed') loadInstalled();
   }, [tab]);
 
-  // 自动跳转到有内容的 tab
+  // 有进行中任务时自动留在 active，否则跳 done
   useEffect(() => {
     if (tab === 'active' && activeTasks.length === 0 && doneTasks.length > 0) setTab('done');
   }, [tasks.length]);
 
-  const handleRequestSaf = async () => {
-    setRequestingPerm(true);
-    try { await requestDownloadsPermission(); } finally { setRequestingPerm(false); }
+  // ── 安装 APK ───────────────────────────────────────────
+  const handleInstall = async (item: DownloadTask) => {
+    if (!item.localUri || installingId) return;
+    setInstallingId(item.id);
+    try {
+      if (Platform.OS === 'android') {
+        const IL = await import('expo-intent-launcher');
+        const FS = await import('expo-file-system/legacy');
+        // file:// → content:// via FileProvider（Android 7+ 跨进程必须用 content://）
+        const contentUri = await FS.getContentUriAsync(item.localUri);
+        await IL.startActivityAsync('android.intent.action.VIEW', {
+          data: contentUri,
+          type: getMimeType(item.filename),
+          flags: 1,
+        });
+      } else {
+        const Sharing = await import('expo-sharing');
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(item.localUri, {
+            mimeType: getMimeType(item.filename),
+            dialogTitle: isInstallerFile(item.filename) ? '安装应用' : '查看文件',
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('[Downloads] 安装失败:', err);
+    } finally {
+      setInstallingId(null);
+    }
   };
 
-  const totalDownloadedBytes = doneTasks.reduce((sum, t) => sum + (t.totalBytes || 0), 0);
-
-  // ── 已安装：忽略更新 ──────────────────────────────────────
+  // ── 已安装操作 ─────────────────────────────────────────
   const handleIgnoreUpdate = async (app: InstalledApp) => {
     if (!app.latest_version) return;
     await ignoreInstalledUpdate(app.app_id, app.latest_version);
@@ -194,7 +224,6 @@ export default function DownloadsScreen() {
     await refreshUpdateCount();
   };
 
-  // ── 已安装：移除记录 ──────────────────────────────────────
   const handleRemoveInstalled = async (app: InstalledApp) => {
     await removeInstalledApp(app.app_id);
     await loadInstalled();
@@ -205,7 +234,12 @@ export default function DownloadsScreen() {
   const renderActiveItem = ({ item }: { item: DownloadTask }) => {
     const pct = item.progress >= 0 ? Math.round(item.progress * 100) : null;
     const spd = formatSpeed(item.speed);
+    const isDownloading = item.status === 'downloading';
+    const isPaused = item.status === 'paused';
     const isFailed = item.status === 'failed';
+    // Android 无断点续传，不显示暂停按钮（暂停=取消后重头来，改为只显示取消）
+    const canPause = isPaused === false && isDownloading && Platform.OS === 'ios';
+
     return (
       <View style={{ backgroundColor: '#fff', borderRadius: 14, padding: 14, marginBottom: 8,
         borderWidth: 0.5, borderColor: '#F0F0F0' }}>
@@ -216,16 +250,13 @@ export default function DownloadsScreen() {
               {item.appName}
             </Text>
             <Text style={{ fontSize: 12, color: '#888' }} numberOfLines={1}>{item.filename}</Text>
-            {item.status === 'downloading' && (
+
+            {isDownloading && (
               <View style={{ gap: 1 }}>
-                {/* 第一行：百分比 */}
                 {pct != null
                   ? <Text style={{ fontSize: 12, color: BLUE, fontWeight: '600' }}>{pct}%</Text>
-                  : <Text style={{ fontSize: 12, color: BLUE, fontWeight: '600' }}>下载中…</Text>
-                }
-                {/* 第二行：速率（独占一行，避免宽度变化引起跳行） */}
+                  : <Text style={{ fontSize: 12, color: BLUE, fontWeight: '600' }}>下载中…</Text>}
                 {spd ? <Text style={{ fontSize: 11, color: '#999' }}>{spd}</Text> : null}
-                {/* 第三行：已下载/总大小 + 剩余时间 */}
                 {(item.totalBytes > 0 || item.eta > 0) && (
                   <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
                     {item.totalBytes > 0 && (
@@ -242,9 +273,10 @@ export default function DownloadsScreen() {
                 )}
               </View>
             )}
-            {item.status === 'paused' && (
+
+            {isPaused && (
               <Text style={{ fontSize: 12, color: ORANGE, fontWeight: '500' }}>
-                已暂停 · {pct}%
+                已暂停{pct != null ? ` · ${pct}%` : ''}
               </Text>
             )}
             {item.status === 'pending' && (
@@ -254,14 +286,15 @@ export default function DownloadsScreen() {
               <Text style={{ fontSize: 11, color: RED }} numberOfLines={2}>{item.error}</Text>
             )}
           </View>
+
           <View style={{ flexDirection: 'row', gap: 6 }}>
-            {item.status === 'downloading' && (
+            {canPause && (
               <ActionBtn icon="pause" color={ORANGE} bg="#FFF7E6" onPress={() => pause(item.id)} />
             )}
-            {item.status === 'paused' && (
+            {isPaused && (
               <ActionBtn icon="play" color={BLUE} bg="#E6F7FF" onPress={() => resume(item.id)} />
             )}
-            {(item.status === 'downloading' || item.status === 'paused' || item.status === 'pending') && (
+            {(isDownloading || isPaused || item.status === 'pending') && (
               <ActionBtn icon="close" color={RED} bg="#FFF1F0" onPress={() => cancel(item.id)} />
             )}
             {isFailed && (
@@ -269,6 +302,9 @@ export default function DownloadsScreen() {
             )}
           </View>
         </View>
+
+        {/* 细进度条：只在有明确进度时显示 */}
+        {isDownloading && <ProgressBar progress={item.progress} />}
       </View>
     );
   };
@@ -278,6 +314,8 @@ export default function DownloadsScreen() {
     const isInstaller = isInstallerFile(item.filename);
     const statusLabel = item.status === 'failed' ? '失败' : item.status === 'cancelled' ? '已取消' : '完成';
     const statusColor = item.status === 'failed' ? RED : item.status === 'cancelled' ? '#AAA' : GREEN;
+    const isInstalling = installingId === item.id;
+
     return (
       <View style={{ backgroundColor: '#fff', borderRadius: 14, padding: 14, marginBottom: 8,
         borderWidth: 0.5, borderColor: '#F0F0F0' }}>
@@ -308,36 +346,14 @@ export default function DownloadsScreen() {
           </View>
           <View style={{ flexDirection: 'row', gap: 6 }}>
             {item.status === 'completed' && item.localUri && (
-              <ActionBtn
-                icon={isInstaller ? 'phone-portrait-outline' : 'open-outline'}
-                color={GREEN} bg="#F6FFED"
-                label={isInstaller ? '安装' : '打开'}
-                onPress={async () => {
-                  try {
-                    if (Platform.OS === 'android' && isInstaller) {
-                      const IL = await import('expo-intent-launcher');
-                      // file:// URI 在 Android 7+ 跨进程时会抛 FileUriExposedException
-                      // 用 getContentUriAsync 包一层 FileProvider 转为 content:// 再传安装器
-                      let installUri = item.localUri!;
-                      if (installUri.startsWith('file://')) {
-                        const FS = await import('expo-file-system');
-                        installUri = await FS.getContentUriAsync(installUri);
-                      }
-                      await IL.startActivityAsync('android.intent.action.VIEW', {
-                        data: installUri, type: 'application/vnd.android.package-archive', flags: 1,
-                      });
-                    } else {
-                      const Sharing = await import('expo-sharing');
-                      if (await Sharing.isAvailableAsync()) {
-                        await Sharing.shareAsync(item.localUri!, {
-                          mimeType: isInstaller ? 'application/vnd.android.package-archive' : 'application/octet-stream',
-                          dialogTitle: isInstaller ? '安装应用' : '查看文件',
-                        });
-                      }
-                    }
-                  } catch { /* ignore */ }
-                }}
-              />
+              isInstalling
+                ? <ActivityIndicator size={20} color={GREEN} style={{ width: 34, height: 34 }} />
+                : <ActionBtn
+                    icon={isInstaller ? 'phone-portrait-outline' : 'open-outline'}
+                    color={GREEN} bg="#F6FFED"
+                    label={isInstaller ? '安装' : '打开'}
+                    onPress={() => handleInstall(item)}
+                  />
             )}
             {item.status === 'failed' && (
               <ActionBtn icon="refresh" color={BLUE} bg="#E6F7FF" onPress={() => retry(item.id)} />
@@ -365,7 +381,6 @@ export default function DownloadsScreen() {
           borderWidth: 0.5, borderColor: hasUpdate ? '#FFD591' : '#F0F0F0' }}
       >
         <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
-          {/* 图标区 */}
           <View style={{ width: 44, height: 44, borderRadius: 12, overflow: 'hidden',
             backgroundColor: '#F5F6F8', alignItems: 'center', justifyContent: 'center' }}>
             <Ionicons name="cube-outline" size={24} color="#AAA" />
@@ -392,7 +407,6 @@ export default function DownloadsScreen() {
               )}
             </View>
           </View>
-          {/* 操作按钮 */}
           <View style={{ gap: 6, alignItems: 'flex-end' }}>
             {hasUpdate ? (
               <>
@@ -414,7 +428,6 @@ export default function DownloadsScreen() {
           </View>
         </View>
 
-        {/* 底部：安装时间 + 删除 */}
         <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10,
           paddingTop: 8, borderTopWidth: 0.5, borderTopColor: '#F5F5F5' }}>
           <Ionicons name="time-outline" size={12} color="#CCC" />
@@ -434,7 +447,7 @@ export default function DownloadsScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: '#F5F6F8' }} edges={['top']}>
       {/* 确认清除弹窗 */}
       {confirmClear && (
-        <Pressable onPress={() => setConfirmClear(null)}
+        <Pressable onPress={() => setConfirmClear(false)}
           style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 100,
             alignItems: 'center', justifyContent: 'center' }}>
           <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 24, width: 280, gap: 16 }}
@@ -444,13 +457,13 @@ export default function DownloadsScreen() {
               已完成的下载记录将被清除（文件不会被删除）
             </Text>
             <View style={{ flexDirection: 'row', gap: 10 }}>
-              <Pressable onPress={() => setConfirmClear(null)}
+              <Pressable onPress={() => setConfirmClear(false)}
                 style={{ flex: 1, borderRadius: 10, borderWidth: 1, borderColor: '#E0E0E0',
                   paddingVertical: 11, alignItems: 'center' }}>
                 <Text style={{ color: '#555', fontWeight: '500' }}>取消</Text>
               </Pressable>
               <Pressable
-                onPress={() => { clearFinished(); setConfirmClear(null); }}
+                onPress={() => { clearFinished(); setConfirmClear(false); }}
                 style={{ flex: 1, borderRadius: 10, backgroundColor: RED, paddingVertical: 11, alignItems: 'center' }}>
                 <Text style={{ color: '#fff', fontWeight: '600' }}>确认清除</Text>
               </Pressable>
@@ -467,14 +480,14 @@ export default function DownloadsScreen() {
             <Ionicons name="arrow-back" size={24} color="#1A1A1A" />
           </Pressable>
           <Text style={{ flex: 1, fontSize: 18, fontWeight: '700' }}>下载管理</Text>
-          {tab === 'active' && activeTasks.length > 0 && (
+          {tab === 'active' && activeTasks.length > 0 && Platform.OS === 'ios' && (
             <Pressable onPress={() => allPaused ? resumeAll() : pauseAll()}
               style={{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, backgroundColor: '#F0F5FF', marginRight: 6 }}>
               <Text style={{ fontSize: 13, color: BLUE, fontWeight: '500' }}>{allPaused ? '全部恢复' : '全部暂停'}</Text>
             </Pressable>
           )}
           {tab === 'done' && doneTasks.length > 0 && (
-            <Pressable onPress={() => setConfirmClear('finished')} hitSlop={8}>
+            <Pressable onPress={() => setConfirmClear(true)} hitSlop={8}>
               <Text style={{ color: RED, fontSize: 13, fontWeight: '500' }}>清除记录</Text>
             </Pressable>
           )}
@@ -519,28 +532,6 @@ export default function DownloadsScreen() {
             <Text style={{ fontSize: 13, color: ORANGE, fontWeight: '600' }}>开启</Text>
           )}
           <Ionicons name="chevron-forward" size={14} color={ORANGE} />
-        </Pressable>
-      )}
-
-      {/* ── 存储信息卡（Android SAF）── */}
-      {Platform.OS === 'android' && tab === 'active' && (
-        <Pressable
-          onPress={!safGranted ? handleRequestSaf : undefined}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 8,
-            backgroundColor: safGranted ? '#F6FFED' : '#FFF7E6',
-            paddingHorizontal: 16, paddingVertical: 10,
-            borderBottomWidth: 0.5, borderBottomColor: safGranted ? '#D9F7BE' : '#FFE7BA' }}>
-          <Ionicons name={safGranted ? 'folder-open-outline' : 'folder-outline'} size={15}
-            color={safGranted ? GREEN : ORANGE} />
-          <Text style={{ flex: 1, fontSize: 12, color: safGranted ? '#389E0D' : '#874D00' }}>
-            {safGranted
-              ? `文件保存至 Download/ · 累计 ${formatBytes(totalDownloadedBytes)}`
-              : requestingPerm ? '正在申请授权…' : '点击授权 Download 目录，文件将保存到公共下载区'}
-          </Text>
-          {!safGranted && !requestingPerm && (
-            <Text style={{ fontSize: 12, color: ORANGE, fontWeight: '700' }}>去授权</Text>
-          )}
-          {!safGranted && <Ionicons name="chevron-forward" size={14} color={ORANGE} />}
         </Pressable>
       )}
 
