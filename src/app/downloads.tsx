@@ -316,8 +316,15 @@ export default function DownloadsScreen() {
                   try {
                     if (Platform.OS === 'android' && isInstaller) {
                       const IL = await import('expo-intent-launcher');
+                      // file:// URI 在 Android 7+ 跨进程时会抛 FileUriExposedException
+                      // 用 getContentUriAsync 包一层 FileProvider 转为 content:// 再传安装器
+                      let installUri = item.localUri!;
+                      if (installUri.startsWith('file://')) {
+                        const FS = await import('expo-file-system');
+                        installUri = await FS.getContentUriAsync(installUri);
+                      }
                       await IL.startActivityAsync('android.intent.action.VIEW', {
-                        data: item.localUri!, type: 'application/vnd.android.package-archive', flags: 1,
+                        data: installUri, type: 'application/vnd.android.package-archive', flags: 1,
                       });
                     } else {
                       const Sharing = await import('expo-sharing');

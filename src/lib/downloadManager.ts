@@ -68,10 +68,10 @@ export async function hasDownloadsPermission(): Promise<boolean> {
 
 async function moveToSafDownloads(tempUri: string, filename: string, expectedSize: number): Promise<{ uri: string; safFailed: boolean }> {
   const fs = getFS();
-  if (!fs) return { uri: tempUri, safFailed: false };
+  if (!fs) return { uri: tempUri, safFailed: true };  // 无 FS → 文件仍在 tempDir
   try {
     const dirUri = await loadSafUri();
-    if (!dirUri) return { uri: tempUri, safFailed: false };
+    if (!dirUri) return { uri: tempUri, safFailed: true };  // 无 SAF 权限 → 文件仍在 tempDir
 
     let actualSize = expectedSize;
     if (actualSize <= 0) {
@@ -90,9 +90,31 @@ async function moveToSafDownloads(tempUri: string, filename: string, expectedSiz
       dirUri, filename, getMimeType(filename)
     );
     const base64 = await fs.readAsStringAsync(tempUri, { encoding: fs.EncodingType.Base64 });
+
+    // 防止 readAsStringAsync 静默返回空串（低内存时有发生）
+    if (!base64 || base64.length < 16) {
+      throw new Error(`base64 read 返回空结果 (size=${actualSize})`);
+    }
+
     await fs.StorageAccessFramework.writeAsStringAsync(destUri, base64, {
       encoding: fs.EncodingType.Base64,
     });
+
+    // 写后验证：SAF writeAsStringAsync 在低内存时可静默写 0 字节
+    try {
+      const destInfo = await fs.getInfoAsync(destUri);
+      const destSize = (destInfo as any).size ?? -1;
+      // 允许 base64 编码膨胀，原始大小应至少 actualSize * 0.5
+      if (destSize >= 0 && destSize < actualSize * 0.5) {
+        throw new Error(`SAF 写入大小异常: 期望≥${actualSize}, 实际${destSize}`);
+      }
+    } catch (verifyErr) {
+      // getInfoAsync 对某些 SAF URI 可能不支持，仅当有明确大小时才报错
+      const msg = (verifyErr as Error)?.message ?? '';
+      if (msg.includes('SAF 写入大小异常')) throw verifyErr;
+      // 否则忽略验证失败（保守继续）
+    }
+
     await fs.deleteAsync(tempUri, { idempotent: true }).catch(() => null);
     return { uri: destUri, safFailed: false };
   } catch (e) {
@@ -370,11 +392,12 @@ async function startTask(id: string) {
       t.localUri = safResult.uri;
       if (safResult.safFailed) {
         t.error = '文件已保存到缓存目录（可正常安装）';
-      } else {
-        // SAF 成功：文件已移至 Downloads，删除临时目录
+      }
+      // 只有文件实际被移出 tempDir 才删除临时目录，与 safFailed 标志解耦
+      // 防止 safFailed=false 但 uri 仍在 tempDir 时误删（如 !dirUri 分支）
+      if (!safResult.uri.startsWith(tempDir)) {
         await fs.deleteAsync(tempDir, { idempotent: true }).catch(() => null);
       }
-      // SAF 失败时不删 tempDir：localUri 仍指向 tempDir 内的文件，删了就变灰包
     } else {
       t.localUri = result.uri;
     }
