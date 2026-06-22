@@ -1,16 +1,10 @@
 /**
- * 下载管理器 v14 — expo-file-system createDownloadResumable
+ * 下载管理器 v15 — expo-file-system createDownloadResumable（精简稳定版）
  *
- * 采用 Expo 官方下载 API：
- *  1. 用 AbortController + fetch(redirect:'follow') 获取最终 CDN URL（仅读 headers，不下载 body）
- *  2. 将最终 URL 传给 createDownloadResumable，完全绕过 GitHub 302 多级跳转
- *  3. 支持真正的断点续传（pauseAsync / resumeData）
- *
- * 历史：v13 使用 react-native-blob-util，因 OkHttp 原生层与 GitHub CDN SSL/HTTP2
- * 不兼容，产生 "ReactNativeBlobUtil request error"，已回退至 expo-file-system。
+ * 使用 Expo 官方 createDownloadResumable，平台底层（Android HttpURLConnection /
+ * iOS NSURLSession）均默认跟随 302 重定向，无需额外预解析。
  */
 import { Platform } from 'react-native';
-import { fetch } from 'expo/fetch';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as _FileSystem from 'expo-file-system/legacy';
 
@@ -262,28 +256,7 @@ async function startTask(id: string) {
   task.eta = -1;
   notify(task);
 
-  // ── 用 AbortController 预解析 GitHub 重定向，获取最终 CDN URL ─────────────
-  // GitHub browser_download_url 经 1-2 次 302 跳转到 objects.githubusercontent.com
-  // expo-file-system createDownloadResumable 不跟随 302，必须先拿到最终地址
-  // 用 AbortController 在收到 response headers 后立即 abort，不下载 body 避免浪费流量
-  let resolvedUrl = task.url;
-  try {
-    const ctrl = new AbortController();
-    const res = await fetch(task.url, {
-      signal: ctrl.signal,
-      redirect: 'follow',
-      headers: { 'User-Agent': 'OpenAppStore/1.0' },
-    });
-    // response.url 是跟随所有重定向后的最终地址
-    if (res.url && res.url !== task.url) resolvedUrl = res.url;
-    // 立即 abort 停止 body 下载
-    ctrl.abort();
-    res.body?.cancel?.().catch(() => {});
-  } catch {
-    // 预解析失败（含 AbortError）均降级使用原始 URL
-  }
-
-  // ── expo-file-system createDownloadResumable ──────────────────────────────
+  // ── expo-file-system createDownloadResumable（直接传原始 URL，底层自动跟随 302）───
   const progressCallback = (dp: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => {
     const t = tasks.get(id);
     if (!t || t.status !== 'downloading') return;
@@ -311,7 +284,7 @@ async function startTask(id: string) {
   };
 
   const resumable = fs.createDownloadResumable(
-    resolvedUrl,
+    task.url,
     localUri,
     { headers: { 'User-Agent': 'OpenAppStore/1.0' } },
     progressCallback,
