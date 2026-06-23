@@ -266,6 +266,8 @@ export default function DetailScreen() {
   };
   const [app, setApp] = useState<AppItem | null>(null);
   const [releases, setReleases] = useState<GitHubRelease[]>([]);
+  // 未经 installable 过滤的原始最新 release，用于项目信息区显示真实最新版本
+  const [latestRawRelease, setLatestRawRelease] = useState<GitHubRelease | null>(null);
   const [readme, setReadme] = useState('');
   const [loading, setLoading] = useState(true);
   const [favored, setFavored] = useState(false);
@@ -296,6 +298,8 @@ export default function DetailScreen() {
           assets: filterInstallAssets(r.assets),
           verification_assets: filterVerificationAssets(r.assets),
         })).filter((r) => r.assets.length > 0);
+        // 保留未过滤的首条 release 用于项目信息区（真实最新版本，含无安装包的版本）
+        setLatestRawRelease(rels[0] ?? null);
         setReleases(installRels);
         if (installRels.length > 0) setExpandedRelease(installRels[0].id);
         setReadme(md);
@@ -569,10 +573,10 @@ export default function DetailScreen() {
             { icon: 'document-text-outline' as const, color: '#1677FF', label: '许可证', value: app.license || '未知' },
             { icon: 'time-outline' as const, color: '#00B96B', label: '最近更新', value: app.updated_at ? app.updated_at.slice(0, 10).replace(/-/g, '/') : '-' },
             { icon: 'git-branch-outline' as const, color: '#FA8C16', label: '最新版本',
-              value: releases[0]?.tag_name === 'latest'
-                ? `${releases[0]?.published_at?.slice(0, 10).replace(/-/g, '/') ?? '-'} 构建`
-                : (releases[0]?.tag_name?.replace(/^v/i, '') || '-') },
-            { icon: 'calendar-outline' as const, color: '#722ED1', label: '发布时间', value: releases[0]?.published_at ? releases[0].published_at.slice(0, 10).replace(/-/g, '/') : '-' },
+              value: latestRawRelease?.tag_name === 'latest'
+                ? `${latestRawRelease?.published_at?.slice(0, 10).replace(/-/g, '/') ?? '-'} 构建`
+                : (latestRawRelease?.tag_name?.replace(/^v/i, '') || '-') },
+            { icon: 'calendar-outline' as const, color: '#722ED1', label: '发布时间', value: latestRawRelease?.published_at ? latestRawRelease.published_at.slice(0, 10).replace(/-/g, '/') : '-' },
           ].map((row) => (
             <View key={row.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
               <Ionicons name={row.icon} size={16} color={row.color} />
