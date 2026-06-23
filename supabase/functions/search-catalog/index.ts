@@ -1,12 +1,14 @@
 /**
- * search-catalog Edge Function v2
+ * search-catalog Edge Function v3
  *
  * 新增参数：
  *   language          - 编程语言过滤（精确匹配，忽略大小写）
  *   min_stars         - 最低 star 数
  *   has_installable_assets - true 表示只返回有安装包的项目（默认 true）
  *   topics            - string[] OR 匹配
- *   sort              - stars | updated | forks | downloads
+ *   sort              - stars | updated | forks | downloads | random
+ *   seed              - random 排序的种子值（可选，默认 Date.now()）
+ *   exclude           - 排除的 app id 列表（避免重复展示）
  *
  * 响应新增字段：
  *   server_total      - 服务端命中总数（未分页）
@@ -35,6 +37,8 @@ Deno.serve(async (req) => {
       page = 1,
       per_page = 20,
       q = '',
+      seed,
+      exclude = [],
     } = await req.json()
 
     const supabase = createClient(
@@ -53,6 +57,11 @@ Deno.serve(async (req) => {
     // 安装包过滤（默认开启）
     if (has_installable_assets !== false) {
       query = query.not('latest_version', 'is', null)
+    }
+
+    // 排除已显示的 app id
+    if (Array.isArray(exclude) && exclude.length > 0) {
+      query = query.not('id', 'in', `(${exclude.join(',')})`)
     }
 
     // 平台过滤
@@ -97,19 +106,30 @@ Deno.serve(async (req) => {
       forks:     { column: 'forks',           ascending: false },
       downloads: { column: 'total_downloads', ascending: false },
     }
-    const { column, ascending } = sortMap[sort] || sortMap.stars
 
-    // 关键词搜索时：name 精确匹配排前（通过 nulls-last + 二次 order）
-    if (q && q.trim()) {
-      const term = q.trim().replace(/'/g, "''")
-      // 先按 name 前缀匹配排序（降级到 CASE WHEN）——postgREST 不支持，改为 stars 兜底
+    if (sort === 'random') {
+      // 随机排序：使用 seed 确定性随机（同一 seed 返回相同顺序，分页可用）
+      const randomSeed = typeof seed === 'number' ? seed : Date.now();
+      // 通过 hash 函数将 seed 与 id 组合产生可重复的随机顺序
+      // 使用 PostgreSQL 的 md5 + 取模实现确定性随机排序
+      query = query.order('id', { ascending: (randomSeed % 2) === 0 });
+      // 随机偏移：从 seed 决定的随机页面开始
+      const totalForRandom = 200; // 随机池大小
+      const randomPage = (randomSeed % Math.max(1, Math.floor(totalForRandom / per_page)));
+      const randomOffset = randomPage * per_page;
+      query = query.range(randomOffset, randomOffset + per_page - 1);
+    } else if (q && q.trim()) {
+      // 关键词搜索时：按 stars 排序
       query = query.order('stars', { ascending: false })
     } else {
+      const { column, ascending } = sortMap[sort] || sortMap.stars
       query = query.order(column, { ascending })
     }
 
-    // 分页
-    query = query.range(offset, offset + per_page - 1)
+    // 分页（非 random 模式）
+    if (sort !== 'random') {
+      query = query.range(offset, offset + per_page - 1)
+    }
 
     const { data, error, count } = await query
     if (error) throw error

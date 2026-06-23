@@ -52,9 +52,16 @@ export default function HomeTab() {
       const cat = CATEGORIES.find((c) => c.key === catKey) || CATEGORIES[0];
       const body: Record<string, unknown> = {
         sort: cat.sort, page: pageNum, per_page: 20,
+        _ts: Date.now(), // 绕过 Supabase Edge Function 缓存
       };
       if (cat.platform) body.platform = cat.platform;
       if (cat.topics.length > 0) body.topics = cat.topics;
+
+      // 最新分类：使用随机种子让每次刷新看到不同结果
+      if (cat.sort === 'updated' && pageNum === 1) {
+        body.sort = 'random';
+        body.seed = Date.now();
+      }
 
       const { data, error: fnErr } = await supabase.functions.invoke('search-catalog', { body });
       if (fnErr) {
@@ -77,8 +84,7 @@ export default function HomeTab() {
   }, [activeCategory]);
 
   useFocusEffect(useCallback(() => {
-    const STALE_MS = 5 * 60 * 1000; // 5分钟
-    // lastLoadedAtRef===0 表示从未加载过（等价于原 apps.length===0）
+    const STALE_MS = 60_000; // 1分钟（降低缓存时间，让数据更及时）
     const isStale = Date.now() - lastLoadedAtRef.current > STALE_MS;
     if (isStale) {
       loadData(1, false);

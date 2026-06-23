@@ -1,4 +1,4 @@
-import React, { useEffect, useState, type ReactNode } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable, ScrollView, ActivityIndicator, Linking, Platform, useWindowDimensions } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useAndroidGoBack } from '@/hooks/useAndroidGoBack';
@@ -10,9 +10,6 @@ import { addAppEvent } from '@/lib/events';
 import type { AppItem, GitHubRelease } from '@/types';
 import AppIcon from '@/components/openappstore/AppIcon';
 import PlatformTag from '@/components/openappstore/PlatformTag';
-import Marked, { Renderer } from 'react-native-marked';
-import { Image } from 'expo-image';
-import type { ImageStyle } from 'react-native';
 import { useDownload } from '@/ctx/DownloadContext';
 import { useTranslation } from '@/ctx/TranslationContext';
 
@@ -27,226 +24,146 @@ function formatCount(n: number) {
   return String(n);
 }
 
-// ─── 自定义 Renderer：解决 shields.io SVG 徽章不显示的根本问题 ────────────────
-class AppRenderer extends Renderer {
-  constructor() {
-    super(); // 必须调用，初始化基类 Slugger
-  }
-
-  // 覆盖 image：使用 expo-image 替代 react-native Image，shields.io 强制 PNG 格式
-  image(uri: string, alt?: string, _style?: ImageStyle): ReactNode {
-    const key = this.getKey(); // 使用基类 Slugger 生成唯一 key，避免重复 key 渲染异常
-    let src = uri;
-    // shields.io / badge 相关 URL 默认返回 SVG，react-native 无法渲染 → 强制转 PNG
-    if (/shields\.io|badge\.svg|gitcode\.com.*badge|badgen\.net/i.test(src)) {
-      src = src.includes('?') ? src + '&format=png' : src + '?format=png';
-    }
-    return (
-      <Image
-        key={key}
-        source={{ uri: src }}
-        style={{ height: 20, minWidth: 20, maxWidth: '100%' as unknown as number }}
-        contentFit="contain"
-        transition={200}
-      />
-    );
-  }
-}
+// ─── WebView README 渲染：使用 marked + highlight.js 完整支持 GFM ─────────────
+import { WebView } from 'react-native-webview';
 
 /**
- * 预处理 Markdown（完整重写版）：
- * 核心思路：把 HTML 转换为等效 Markdown，而不是直接丢弃
- * 1. 去除 YAML frontmatter
- * 2. GitHub Admonitions `> [!NOTE]` → 普通 blockquote
- * 3. `<a><img></a>` / `<img>` → `![alt](src)`（让 react-native-marked 渲染图片）
- * 4. `<a href>text</a>` → `[text](href)`（保留链接）
- * 5. HTML 标题标签 → Markdown 标题
- * 6. 剥除剩余 HTML 标签（保留文字内容）
- * 7. 清理多余空行
+ * GitHub Flavored Markdown 渲染器
+ * 使用 WebView + marked + highlight.js 完整支持：
+ *  - 表格、任务列表、删除线、表情符号
+ *  - 代码块语法高亮（highlight.js）
+ *  - Alerts/Admonitions（NOTE/TIP/WARNING）
+ *  - 图片（shields.io 强制 PNG）
+ *  - 相对链接自动补全 baseUrl
+ * 渲染效果与 GitHub 一致。
  */
-function preprocessMarkdown(md: string): string {
-  let s = md;
-
-  // 1. YAML frontmatter（--- ... ---）
-  s = s.replace(/^---[\s\S]*?---\r?\n?/, '');
-
-  // 2. GitHub Admonitions
-  s = s.replace(/^>\s*\[!(NOTE|TIP|WARNING|CAUTION|IMPORTANT)\]\s*$/gm, (_, type) => {
-    const labels: Record<string, string> = {
-      NOTE: 'ℹ️ 注意', TIP: '✅ 提示', WARNING: '⚠️ 警告',
-      CAUTION: '⚠️ 警告', IMPORTANT: '❗ 重要',
-    };
-    return `> **${labels[type] ?? type}**`;
-  });
-
-  // 3a. <a href="URL"><img src="SRC" alt="ALT"></a>  →  [![ALT](SRC)](URL)
-  s = s.replace(
-    /<a[^>]+href="([^"]*)"[^>]*>\s*<img[^>]+src="([^"]*)"[^>]*alt="([^"]*)"[^>]*\/?>\s*<\/a>/gi,
-    (_, href, src, alt) => (src ? `[![${alt}](${src})](${href})` : ''),
-  );
-  // alt 在 src 之后的写法
-  s = s.replace(
-    /<a[^>]+href="([^"]*)"[^>]*>\s*<img[^>]+alt="([^"]*)"[^>]+src="([^"]*)"[^>]*\/?>\s*<\/a>/gi,
-    (_, href, alt, src) => (src ? `[![${alt}](${src})](${href})` : ''),
-  );
-
-  // 3b. 单独的 <img src="SRC" alt="ALT"> → ![ALT](SRC)
-  s = s.replace(
-    /<img[^>]+src="([^"]*)"[^>]*alt="([^"]*)"[^>]*\/?>/gi,
-    (_, src, alt) => (src ? `![${alt || 'img'}](${src})` : ''),
-  );
-  s = s.replace(
-    /<img[^>]+alt="([^"]*)"[^>]+src="([^"]*)"[^>]*\/?>/gi,
-    (_, alt, src) => (src ? `![${alt || 'img'}](${src})` : ''),
-  );
-  // 没有 alt 属性的 img
-  s = s.replace(/<img[^>]+src="([^"]*)"[^>]*\/?>/gi, (_, src) => (src ? `![img](${src})` : ''));
-
-  // 4. <a href="URL">text</a> → [text](URL)（只针对纯文本内容，嵌套 img 已在步骤 3 处理）
-  s = s.replace(/<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href, inner) => {
-    const text = inner.replace(/<[^>]+>/g, '').trim();
-    return text ? `[${text}](${href})` : '';
-  });
-
-  // 5. HTML 标题标签 → Markdown 标题
-  s = s.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, (_, c) => `\n# ${c.replace(/<[^>]+>/g, '').trim()}\n`);
-  s = s.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, (_, c) => `\n## ${c.replace(/<[^>]+>/g, '').trim()}\n`);
-  s = s.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, (_, c) => `\n### ${c.replace(/<[^>]+>/g, '').trim()}\n`);
-  s = s.replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, (_, c) => `\n#### ${c.replace(/<[^>]+>/g, '').trim()}\n`);
-
-  // 6. 段落/换行标签 → 换行；列表结构：</li> 先转换确保内容后有换行，再处理容器标签，最后 <li> 转 "- "
-  s = s.replace(/<\/p>/gi, '\n');
-  s = s.replace(/<br\s*\/?>/gi, '\n');
-  s = s.replace(/<\/li>/gi, '\n');
-  s = s.replace(/<\/?ul[^>]*>/gi, '\n');
-  s = s.replace(/<\/?ol[^>]*>/gi, '\n');
-  s = s.replace(/<li[^>]*>/gi, '- ');
-
-  // 7. 剥除剩余所有 HTML 标签（保留文字）
-  s = s.replace(/<[^>]+>/g, '');
-
-  // 8. 反转义常见 HTML 实体
-  s = s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ');
-
-  // 9. 清理多余空行
-  return s.replace(/\n{3,}/g, '\n\n').trim();
-}
-
-/** 将 Markdown 表格转换为带样式的 HTML 表格（仅用于 Web 平台） */
-function convertMarkdownTableToHtml(text: string): string {
-  // 匹配：header行 + 分隔行（|---|...）+ 若干数据行
-  return text.replace(
-    /^(\|.+\|\s*\n)(^\|[\s\-:|]+\|\s*\n)((?:^\|.+\|\s*\n?)+)/gm,
-    (_, headerLine, _sep, dataBlock) => {
-      const parseRow = (line: string) =>
-        line.split('|').slice(1, -1).map((c) => c.trim());
-
-      const headers = parseRow(headerLine);
-      const rows = dataBlock
-        .trim()
-        .split('\n')
-        .filter((l: string) => l.trim().startsWith('|'))
-        .map(parseRow);
-
-      const thStyle =
-        'padding:6px 10px;text-align:left;background:#F8F9FA;font-size:13px;font-weight:600;color:#333;border:1px solid #E5E7EB;white-space:nowrap';
-      const tdStyle =
-        'padding:6px 10px;font-size:13px;color:#555;border:1px solid #E5E7EB;vertical-align:top';
-
-      const thead = `<tr>${headers.map((h) => `<th style="${thStyle}">${h}</th>`).join('')}</tr>`;
-      const tbody = rows
-        .map((row: string[]) => `<tr>${row.map((cell) => `<td style="${tdStyle}">${cell}</td>`).join('')}</tr>`)
-        .join('');
-
-      return `<div style="overflow-x:auto;margin:10px 0"><table style="border-collapse:collapse;width:100%"><thead>${thead}</thead><tbody>${tbody}</tbody></table></div>\n`;
-    },
-  );
-}
-
-/** Markdown 渲染区，兼容 Native（react-native-marked + 自定义 Renderer）和 Web（dangerouslySetInnerHTML） */
-function MarkdownSection({ content, owner, repo }: { content: string; owner: string; repo: string }) {
+function MarkdownWebView({ content, owner, repo }: { content: string; owner: string; repo: string }) {
+  const [webViewHeight, setWebViewHeight] = useState(200);
   const { width } = useWindowDimensions();
+
   if (!content) return null;
-  const cleaned = preprocessMarkdown(content);
+
+  // 预处理：去除 YAML frontmatter
+  const cleaned = content.replace(/^---[\s\S]*?---\r?\n?/, '').trim();
   if (!cleaned) return null;
+
   const baseUrl = `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/`;
 
-  // ── Web 平台 ──────────────────────────────────────────────────────────────
-  if (Platform.OS === 'web') {
-    // 步骤1：保护图片语法，避免后续 HTML 转义破坏 URL
-    const rawImages: string[] = [];
-    let withImgPlaceholders = cleaned.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => {
-      const idx = rawImages.length;
-      rawImages.push(`<img src="${src}" alt="${alt}" style="height:20px;vertical-align:middle;margin:1px 3px 1px 0" />`);
-      return `%%IMG${idx}%%`;
-    });
+  // 转义 markdown 内容以安全注入 HTML
+  const escapedMd = cleaned
+    .replace(/\\/g, '\\\\')
+    .replace(/`/g, '\\`')
+    .replace(/\$/g, '\\$')
+    .replace(/<\/(script|style)>/gi, '<\\/$1>');
 
-    // 步骤2：在转义前先转换 Markdown 表格 → HTML（转义后 | 变成 &#124; 会破坏表格）
-    const rawTables: string[] = [];
-    withImgPlaceholders = convertMarkdownTableToHtml(withImgPlaceholders).replace(
-      /<div style="overflow-x:auto[\s\S]*?<\/div>\n?/g,
-      (match) => {
-        const idx = rawTables.length;
-        rawTables.push(match);
-        return `%%TABLE${idx}%%`;
-      },
-    );
-
-    // 步骤3：转义普通文本中的 HTML 特殊字符，再做 Markdown → HTML 转换
-    let html = withImgPlaceholders
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/^#{3}\s+(.+)$/gm, '<h3 style="font-size:14px;font-weight:700;margin:12px 0 4px;color:#111">$1</h3>')
-      .replace(/^#{2}\s+(.+)$/gm, '<h2 style="font-size:16px;font-weight:700;margin:14px 0 6px;color:#111">$1</h2>')
-      .replace(/^#\s+(.+)$/gm, '<h1 style="font-size:18px;font-weight:700;margin:16px 0 8px;color:#111">$1</h1>')
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.+?)\*/g, '<em>$1</em>')
-      .replace(/`([^`]+)`/g, '<code style="background:#F4F4F4;border-radius:3px;padding:1px 5px;font-size:12px">$1</code>')
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:#1677FF;text-decoration:none">$1</a>')
-      .replace(/^---+$/gm, '<hr style="border:none;border-top:1px solid #E5E7EB;margin:12px 0"/>')
-      .replace(/^- (.+)$/gm, '<li style="margin:2px 0;font-size:14px;color:#555">$1</li>')
-      .replace(/(<li[^>]*>[\s\S]*?<\/li>(\n|$))+/g, (m) => `<ul style="padding-left:18px;margin:6px 0">${m}</ul>`)
-      .replace(/\n\n/g, '</p><p style="margin:0 0 8px;color:#555;font-size:14px;line-height:22px">')
-      .replace(/\n/g, '<br/>');
-
-    // 步骤4：还原图片和表格占位符
-    rawImages.forEach((img, i) => { html = html.replace(`%%IMG${i}%%`, img); });
-    rawTables.forEach((tbl, i) => { html = html.replace(`%%TABLE${i}%%`, tbl); });
-
-    return (
-      <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4 }}>
-        <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A', marginBottom: 10 }}>README</Text>
-        {/* @ts-ignore web only */}
-        <div
-          style={{ fontSize: 14, lineHeight: '22px', color: '#555', fontFamily: 'system-ui,sans-serif', wordBreak: 'break-word' }}
-          dangerouslySetInnerHTML={{ __html: `<p style="margin:0 0 8px;color:#555;font-size:14px;line-height:22px">${html}</p>` }}
-        />
-      </View>
-    );
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"><\/script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"><\/script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+    font-size: 14px; line-height: 1.6; color: #1F2328;
+    padding: 0; margin: 0; word-wrap: break-word; overflow-wrap: break-word;
   }
+  h1 { font-size: 1.8em; border-bottom: 1px solid #d8dee4; padding-bottom: .3em; margin: 24px 0 16px; }
+  h2 { font-size: 1.4em; border-bottom: 1px solid #d8dee4; padding-bottom: .3em; margin: 24px 0 16px; }
+  h3 { font-size: 1.15em; margin: 24px 0 16px; }
+  h4 { font-size: 1em; margin: 24px 0 16px; }
+  p { margin: 0 0 12px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  img { max-width: 100%; height: auto; }
+  code { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; font-size: 85%; background: rgba(175,184,193,0.2); border-radius: 3px; padding: 2px 4px; }
+  pre { background: #f6f8fa; border-radius: 6px; padding: 12px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: 85%; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  th, td { border: 1px solid #d8dee4; padding: 6px 10px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f8f9fa; }
+  blockquote { border-left: 4px solid #d8dee4; margin: 0 0 12px; padding: 0 12px; color: #656d76; }
+  ul, ol { padding-left: 24px; margin: 0 0 12px; }
+  li { margin: 2px 0; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 24px 0; }
+  .task-list-item { list-style: none; margin-left: -20px; }
+  .task-list-item input { margin-right: 6px; }
+  /* GitHub Alerts */
+  .markdown-alert { padding: 8px 16px; margin: 8px 0; border-left: 4px solid; border-radius: 4px; }
+  .markdown-alert-note { background: #ddf4ff; border-color: #0969da; }
+  .markdown-alert-tip { background: #dafbe1; border-color: #1a7f37; }
+  .markdown-alert-warning { background: #fff8c5; border-color: #9a6700; }
+  .markdown-alert-caution { background: #ffebe9; border-color: #cf222e; }
+  .markdown-alert-title { font-weight: 600; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<div id="content"></div>
+<script>
+  marked.setOptions({
+    gfm: true,
+    breaks: false,
+    highlight: function(code, lang) {
+      if (lang && hljs.getLanguage(lang)) {
+        try { return hljs.highlight(code, { language: lang }).value; }
+        catch(e) { /* fall through */ }
+      }
+      return hljs.highlightAuto(code).value;
+    }
+  });
 
-  // ── Native 平台：react-native-marked v8，自定义 Renderer 解决 SVG 徽章问题 ──
+  var md = \`${escapedMd}\`;
+
+  // 相对链接补全 baseUrl
+  md = md.replace(/\\]\\\\(((?!https?:\\/\\/)[^)]+)\\\\)/g, function(m, p1) {
+    return '](' + '${baseUrl.replace(/'/g, "\\'")}' + p1 + ')';
+  });
+
+  // 图片链接补全
+  md = md.replace(/!\\[[^\\]]*\\]\\(((?!https?:\\/\\/)[^)]+)\\)/g, function(m, p1) {
+    return m.replace(p1, '${baseUrl.replace(/'/g, "\\'")}' + p1);
+  });
+
+  document.getElementById('content').innerHTML = marked.parse(md);
+
+  // 转 shields.io SVG → PNG
+  document.querySelectorAll('img').forEach(function(img) {
+    if (/shields\\.io|badge\\.svg|badgen\\.net/i.test(img.src)) {
+      img.src = img.src + (img.src.includes('?') ? '&format=png' : '?format=png');
+    }
+  });
+
+  // 通知 RN 高度
+  setTimeout(function() {
+    var h = document.body.scrollHeight;
+    window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'height', height: h }));
+  }, 200);
+</script>
+</body>
+</html>`;
+
   return (
     <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4 }}>
       <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A', marginBottom: 10 }}>README</Text>
-      <Marked
-        value={cleaned}
-        baseUrl={baseUrl}
-        renderer={new AppRenderer()}
-        flatListProps={{ scrollEnabled: false }}
-        styles={{
-          text: { fontSize: 14, color: '#555', lineHeight: 22 },
-          h1: { fontSize: 18, fontWeight: '700', color: '#1A1A1A', marginBottom: 8, marginTop: 16 },
-          h2: { fontSize: 16, fontWeight: '700', color: '#1A1A1A', marginBottom: 6, marginTop: 14 },
-          h3: { fontSize: 14, fontWeight: '700', color: '#1A1A1A', marginBottom: 4, marginTop: 12 },
-          code: { backgroundColor: '#F4F4F4', borderRadius: 4 },
-          blockquote: { borderLeftWidth: 3, borderLeftColor: '#DDD', paddingLeft: 12, marginLeft: 0 },
-          link: { color: '#1677FF' },
-          hr: { backgroundColor: '#E5E7EB', height: 1, marginVertical: 12 },
-          table: { borderWidth: 1, borderColor: '#E5E7EB' },
-          tableRow: { borderBottomWidth: 1, borderBottomColor: '#E5E7EB' },
-          tableCell: { padding: 6 },
-          image: { maxWidth: (width - 64) as unknown as undefined },
+      <WebView
+        source={{ html }}
+        style={{ width: width - 64, height: webViewHeight }}
+        scrollEnabled={false}
+        javaScriptEnabled={true}
+        originWhitelist={['*']}
+        onMessage={(e) => {
+          try {
+            const data = JSON.parse(e.nativeEvent.data);
+            if (data.type === 'height' && data.height > 0) {
+              setWebViewHeight(data.height);
+            }
+          } catch { /* ignore */ }
         }}
+        onError={() => {}}
       />
     </View>
   );
@@ -595,7 +512,7 @@ export default function DetailScreen() {
         </View>
 
         {/* README Markdown 渲染 */}
-        {(displayReadme || readme) ? <MarkdownSection content={displayReadme || readme} owner={owner ?? ''} repo={repo ?? ''} /> : null}
+        {(displayReadme || readme) ? <MarkdownWebView content={displayReadme || readme} owner={owner ?? ''} repo={repo ?? ''} /> : null}
       </ScrollView>
     </SafeAreaView>
   );

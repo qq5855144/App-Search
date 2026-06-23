@@ -66,7 +66,7 @@ export default function DiscoverTab() {
     try {
       const topic = CATEGORIES.find((c) => c.key === cat)?.topic ?? '';
       const { data, error: fnErr } = await supabase.functions.invoke('search-catalog', {
-        body: { platform: p !== '全平台' ? p : undefined, topic: topic || undefined, sort: s, page: pageNum, per_page: 20 },
+        body: { platform: p !== '全平台' ? p : undefined, topic: topic || undefined, sort: s, page: pageNum, per_page: 20, _ts: Date.now() },
       });
       if (fnErr) {
         const msg = await fnErr?.context?.text?.().catch(() => '');
@@ -97,9 +97,9 @@ export default function DiscoverTab() {
     loadData(1, false);
   };
 
-  // 5分钟内已加载过则不重复请求；超过5分钟或首次进入则刷新
+  // 1分钟内已加载过则不重复请求；超过1分钟或首次进入则刷新
   useFocusEffect(useCallback(() => {
-    const STALE_MS = 5 * 60 * 1000;
+    const STALE_MS = 60_000;
     const isStale = Date.now() - lastLoadedAtRef.current > STALE_MS;
     if (isStale) loadData(1, false);
   }, [loadData]));
