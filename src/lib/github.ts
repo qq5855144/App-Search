@@ -627,6 +627,36 @@ export async function fetchContributors(owner: string, repo: string): Promise<Ar
   }))
 }
 
+/**
+ * 获取已认证用户在 GitHub 上 Star 的所有仓库（需要有效 Token）
+ * 自动分页，最多拉取 500 条（5 页 × 100）
+ */
+export async function fetchUserStarred(): Promise<AppItem[]> {
+  if (!cachedToken) throw new Error('未配置 GitHub Token')
+  const results: AppItem[] = []
+  const perPage = 100
+  const maxPages = 5
+  for (let page = 1; page <= maxPages; page++) {
+    const res = await fetch(
+      `${GITHUB_API}/user/starred?per_page=${perPage}&page=${page}`,
+      {
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'Authorization': `Bearer ${cachedToken}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      }
+    )
+    if (res.status === 401) throw new Error('Token 无效或已过期，请重新配置')
+    if (res.status === 403 || res.status === 429) throw new Error('GitHub API 请求次数已达上限，请稍后再试')
+    if (!res.ok) throw new Error(`GitHub API 请求失败 (${res.status})`)
+    const list: any[] = await res.json()
+    results.push(...list.map(mapRepoToApp))
+    if (list.length < perPage) break // 最后一页
+  }
+  return results
+}
+
 export async function fetchRateLimit(): Promise<{ remaining: number; limit: number; reset: number }> {
   try {
     const data = await callEdgeFunction({
