@@ -96,6 +96,8 @@ export interface DownloadTask {
   localUri: string | null;
   error: string | null;
   createdAt: number;
+  /** RST_STREAM CANCEL 专用重试计数（上限 3 次），与 stall 无关 */
+  _rstRetryCount?: number;
 }
 
 export const REFRESH_EVENT = Symbol('download_refresh');
@@ -127,46 +129,6 @@ function flushQueue() {
     (t) => t.status === 'pending' && !launchingSet.has(t.id),
   );
   if (next) startTask(next.id);
-}
-
-/**
- * 预解析重定向 URL，返回最终直链（通常是 objects.githubusercontent.com CDN 地址）
- *
- * 背景：GitHub 的 browser_download_url 形如
- *   https://github.com/owner/repo/releases/download/v1.0/app.apk
- * 这是一个 302 重定向，真实文件在 objects.githubusercontent.com。
- *
- * OkHttp（Android HTTP/2）在跟随跨域重定向时，会收到服务端发来的
- * RST_STREAM CANCEL 关闭旧流，并将其作为异常抛出（"stream was reset: CANCEL"），
- * 导致 createDownloadResumable 下载失败。
- *
- * 解法：下载前用 fetch（JS 层，自动跟随重定向）解析出最终 URL，
- * 将直链传给 createDownloadResumable，完全绕过 OkHttp HTTP/2 重定向问题。
- *
- * - 仅 Android 需要此处理（iOS NSURLSession 能正确跟随重定向）
- * - 解析失败时静默返回原始 URL，不阻断下载
- * - 3s 超时，避免弱网下长时间阻塞
- */
-async function resolveRedirect(url: string): Promise<string> {
-  if (!IS_ANDROID) return url;
-  // 非 GitHub release 链接无需解析
-  if (!url.includes('github.com') && !url.includes('api.github.com')) return url;
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 3_000);
-    // redirect: 'follow' 让 fetch 自动跟随所有跳转，response.url 即最终落地地址
-    const res = await fetch(url, {
-      method: 'HEAD',
-      redirect: 'follow',
-      headers: { 'User-Agent': 'OpenAppStore/1.0' },
-      signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-    const finalUrl = res.url;
-    return finalUrl && finalUrl !== url ? finalUrl : url;
-  } catch {
-    return url; // 解析失败，使用原始 URL
-  }
 }
 
 function mapErrorMessage(msg: string): string {
@@ -341,14 +303,10 @@ async function startTaskNative(id: string) {
     notify(task);
   }
 
-  // Android：预解析 GitHub 302 重定向，拿到 objects.githubusercontent.com 直链
-  // 避免 OkHttp HTTP/2 把 RST_STREAM CANCEL（正常关闭旧流）当下载错误抛出
-  const downloadUrl = await resolveRedirect(task.url);
-
   let resumableRef: _FileSystem.DownloadResumable | null = null;
 
   const resumable = fs.createDownloadResumable(
-    downloadUrl,
+    task.url,
     localUri,
     { headers: { 'User-Agent': 'OpenAppStore/1.0' } },
     (dp: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => {
@@ -440,9 +398,34 @@ async function startTaskNative(id: string) {
     // pause/cancel 已将 status 置为 paused/cancelled，不覆盖
     if (t.status !== 'downloading') { flushQueue(); return; }
 
-    // 系统层抛出异常 → 标记失败，由用户决定是否重试（不自动重试）
+    const msg: string = e?.message ?? '';
+
+    // RST_STREAM CANCEL 是 OkHttp HTTP/2 跟随 GitHub 302 重定向时的已知问题：
+    // 服务端用 RST_STREAM CANCEL 正常关闭旧流，OkHttp 将其作为异常抛出。
+    // 解决方案：最多重试 3 次（第 2 次通常直连 CDN 缓存，不再触发重定向）。
+    // 注意：这与之前的"无限重启"完全不同——stall 检测才是无限重启的根因（已移除）。
+    //       此处重试仅限 RST_STREAM/CANCEL，且上限 3 次，不会无限循环。
+    const isRstStream =
+      msg.includes('stream was reset') ||
+      msg.includes('RST_STREAM') ||
+      (msg.includes('CANCEL') && !msg.includes('user cancel'));
+    const MAX_RST_RETRY = 3;
+    if (isRstStream && (t._rstRetryCount ?? 0) < MAX_RST_RETRY) {
+      t._rstRetryCount = (t._rstRetryCount ?? 0) + 1;
+      t.status = 'pending';
+      t.error = `连接被重置，自动重试 (${t._rstRetryCount}/${MAX_RST_RETRY})...`;
+      t.speed = 0; t.eta = -1;
+      t.bytesWritten = 0; t.totalBytes = 0; t.progress = 0;
+      notify(t);
+      await AsyncStorage.removeItem(resumeKey).catch(() => null);
+      await cleanupTempDir(id);
+      setTimeout(() => flushQueue(), 1_000);
+      return;
+    }
+
+    // 其他错误 → 立即失败，用户手动重试
     t.status = 'failed';
-    t.error = mapErrorMessage(e?.message ?? '');
+    t.error = mapErrorMessage(msg);
     notify(t);
     await AsyncStorage.removeItem(resumeKey).catch(() => null);
     await cleanupTempDir(id);
