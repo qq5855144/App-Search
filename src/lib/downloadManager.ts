@@ -1,5 +1,5 @@
 /**
- * 下载管理器 v20 — 统一引擎，修复4处缺陷，清理死代码
+ * 下载管理器 v21
  *
  * 引擎：
  *  - Android/iOS : expo-file-system createDownloadResumable（应用内下载，进度可追踪）
@@ -8,6 +8,7 @@
  * 存储策略：
  *  - 下载至 documentDirectory/dl_${id}/ 临时目录
  *  - 完成后 moveAsync → dl_perm/${filename}（持久目录）
+ *  - Android 额外 SAF 复制到公共 Downloads 目录（/storage/emulated/0/Download/）
  *  - Android 通过 FileProvider getContentUriAsync 暴露给安装器
  *  - iOS 通过 shareAsync 暴露给安装器
  *
@@ -21,10 +22,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as _FileSystem from 'expo-file-system/legacy';
 
 const IS_WEB = Platform.OS === 'web';
+const IS_ANDROID = Platform.OS === 'android';
 const MAX_CONCURRENT = 3;
 const PERM_DIR_NAME = 'dl_perm';
 const MAX_AUTO_RETRY = 5;
 const RESUME_KEY_PREFIX = '@openappstore/resume_'; // iOS 断点续传 key
+const SAF_PERM_KEY = '@openappstore/saf_downloads_uri'; // Android SAF 授权 URI
 
 function getFS(): typeof _FileSystem | null {
   return IS_WEB ? null : _FileSystem;
@@ -193,6 +196,55 @@ async function moveToPermanentStorage(tempUri: string, filename: string): Promis
   return destUri;
 }
 
+/**
+ * Android：通过 StorageAccessFramework 把文件复制到公共 Downloads 目录。
+ * - 首次调用弹出目录选择器（预选 Downloads），用户授权后 URI 持久化
+ * - 后续调用直接用已缓存 URI，无需再次授权
+ * - 任何错误均静默忽略（不影响主下载流程）
+ */
+async function copyToPublicDownloads(localUri: string, filename: string): Promise<void> {
+  if (!IS_ANDROID) return;
+  try {
+    const SAF = _FileSystem.StorageAccessFramework;
+    if (!SAF) return;
+
+    // 读取或申请授权
+    let dirUri = await AsyncStorage.getItem(SAF_PERM_KEY).catch(() => null);
+    if (!dirUri) {
+      // 预选到 Downloads 目录，用户点允许即可
+      const result = await SAF.requestDirectoryPermissionsAsync(
+        'content://com.android.externalstorage.documents/tree/primary%3ADownload',
+      );
+      if (!result.granted) return; // 用户拒绝，静默跳过
+      dirUri = result.directoryUri;
+      await AsyncStorage.setItem(SAF_PERM_KEY, dirUri).catch(() => null);
+    }
+
+    // 在 Downloads 目录创建文件（同名自动覆盖：先删后建）
+    const existingFiles = await SAF.readDirectoryAsync(dirUri).catch(() => [] as string[]);
+    for (const existingUri of existingFiles) {
+      // SAF URI 格式：...%2F<filename>，取最后一段比较
+      const existingName = decodeURIComponent(existingUri.split('%2F').pop() ?? '');
+      if (existingName === filename) {
+        await SAF.deleteAsync(existingUri).catch(() => null);
+        break;
+      }
+    }
+    const mimeType = getMimeType(filename);
+    const newFileUri = await SAF.createFileAsync(dirUri, filename, mimeType);
+
+    // 读取源文件内容写入目标
+    const content = await _FileSystem.readAsStringAsync(localUri, {
+      encoding: _FileSystem.EncodingType.Base64,
+    });
+    await SAF.writeAsStringAsync(newFileUri, content, {
+      encoding: _FileSystem.EncodingType.Base64,
+    });
+  } catch {
+    // 复制失败不阻断主流程，安装包依然可从内部目录安装
+  }
+}
+
 // ─── 核心下载逻辑 ─────────────────────────────────────────────────────────────
 
 /** 通用进度更新（Android / iOS 均复用） */
@@ -336,6 +388,8 @@ async function startTaskNative(id: string) {
     try {
       const permUri = await moveToPermanentStorage(result.uri, t.filename);
       t.localUri = permUri;
+      // Android：额外复制到公共 Downloads（不阻断主流程）
+      if (IS_ANDROID) copyToPublicDownloads(permUri, t.filename);
     } catch {
       // 移动失败则保留临时目录路径（安装仍可使用）
       t.localUri = result.uri;

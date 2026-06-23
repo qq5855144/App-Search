@@ -150,8 +150,12 @@ export default function DownloadsScreen() {
 
   const updatableApps = installed.filter((a) => {
     if (!a.latest_version) return false;
-    if (a.latest_version === a.installed_version) return false;
-    if (a.ignored_version && a.latest_version === a.ignored_version) return false;
+    // 统一用 normalizeVersion 去掉 'v' 前缀再比对，与 renderInstalledItem 逻辑一致
+    const latest = normalizeVersion(a.latest_version);
+    const installed = normalizeVersion(a.installed_version);
+    const ignored = normalizeVersion(a.ignored_version ?? '');
+    if (latest === installed) return false;
+    if (ignored && latest === ignored) return false;
     return true;
   });
 
