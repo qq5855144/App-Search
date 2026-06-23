@@ -1,36 +1,27 @@
 /**
- * 下载管理器 v23 — 断点续传 + 弱网优化
+ * 下载管理器 v25 — 极简稳定版
+ *
+ * 设计原则：不与系统 HTTP 引擎对抗，只做必要的封装
  *
  * 引擎：
- *  - Android/iOS : expo-file-system createDownloadResumable（应用内下载，进度可追踪）
+ *  - Android/iOS : expo-file-system createDownloadResumable
+ *                  底层 = Android OkHttp / iOS NSURLSession（系统级 HTTP 引擎）
+ *                  系统引擎自带超时处理和重连，不需要我们额外干预
  *  - Web         : window.open() 交给浏览器
  *
  * 存储策略：
  *  - 下载至 documentDirectory/dl_${id}/ 临时目录
  *  - 完成后 moveAsync → dl_perm/${filename}（持久目录）
  *  - Android 额外 SAF 复制到公共 Downloads 目录（/storage/emulated/0/Download/）
- *  - Android 通过 FileProvider getContentUriAsync 暴露给安装器
- *  - iOS 通过 shareAsync 暴露给安装器
  *
- * 断点续传：
- *  - iOS：NSURLSessionDownloadTask 字节级续传，resumeData 以 URL 为 key 持久化
- *         → 跨会话（App 重启后）可从断点恢复
- *  - Android：保存已下载字节数至 AsyncStorage（key = URL hash），重试时展示已缓存进度
- *             注：expo-file-system 在 Android 上不支持字节级续传（OkHttp 不保留分段文件）
+ * 断点续传（仅用于手动暂停/继续）：
+ *  - iOS：pause() 时调用 savable() 保存 resumeData，resume() 时读取并续传
+ *  - Android：expo-file-system 不支持字节级续传，resume() 等同于从头重新下载
  *
- * 预检（HEAD 请求）：
- *  - 下载前发 HEAD 获取 Content-Length（提前展示文件大小）
- *  - 检测服务器是否支持 Range，为将来原生模块集成做标记
- *
- * 弱网优化：
- *  - 卡顿检测 30s（↓ 旧版 60s）
- *  - 最大自动重试 8 次（↑ 旧版 5 次）
- *  - 指数退避 + ±30% 随机抖动（避免雷群效应）
- *  - isTransientError 扩展覆盖更多弱网错误码
- *
- * v23 修复点（延续 v22）：
- *  5. enqueue 对 completed 任务执行 delete+create → 意外重新下载 → 改为直接返回 existing.id
- *  6. 断点续传 key 从 task ID 改为 URL hash → 跨会话可恢复 iOS 续传数据
+ * 移除的"负优化"：
+ *  - probeDownloadUrl (HEAD 预检)：增加 8s 启动延迟，期间 flushQueue 可重复触发竞态
+ *  - stall 卡顿检测 + 自动重试：强制 cancelAsync → 系统引擎本身会等待/重连，我们的取消反而干扰
+ *  - catch 块指数退避重试：在系统重试之上叠加，导致无限重新下载
  */
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -41,10 +32,7 @@ const IS_ANDROID = Platform.OS === 'android';
 const IS_IOS = Platform.OS === 'ios';
 const MAX_CONCURRENT = 3;
 const PERM_DIR_NAME = 'dl_perm';
-const MAX_AUTO_RETRY = 8;          // 弱网下更多重试机会（旧版 5 次）
-const STALL_INTERVAL_MS = 30_000;  // 卡顿检测缩短至 30s（旧版 60s），弱网更快响应
 const RESUME_KEY_PREFIX = '@openappstore/resume_';
-const PARTIAL_KEY_PREFIX = '@openappstore/partial_'; // Android 已下载字节数缓存
 const SAF_PERM_KEY = '@openappstore/saf_downloads_uri';
 
 function getFS(): typeof _FileSystem | null {
@@ -108,7 +96,6 @@ export interface DownloadTask {
   localUri: string | null;
   error: string | null;
   createdAt: number;
-  _autoRetryCount?: number;
 }
 
 export const REFRESH_EVENT = Symbol('download_refresh');
@@ -142,95 +129,6 @@ function flushQueue() {
   if (next) startTask(next.id);
 }
 
-function isTransientError(msg: string): boolean {
-  return (
-    msg.includes('Network request failed') ||
-    msg.includes('Unable to resolve host') ||
-    msg.includes('timeout') ||
-    msg.includes('ETIMEDOUT') ||
-    msg.includes('ECONNRESET') ||
-    msg.includes('ECONNREFUSED') ||
-    msg.includes('ENOTFOUND') ||
-    msg.includes('socket hang up') ||
-    // GitHub CDN HTTP/2 RST_STREAM — OkHttp3 被服务端重置，属于暂时性 CDN 问题
-    msg.includes('stream was reset') ||
-    msg.includes('CANCEL') ||
-    msg.includes('RST_STREAM') ||
-    msg.includes('unexpected end of stream') ||
-    // OkHttp3 / Android HttpURLConnection 连接中途断开（大文件常见）
-    msg.includes('Download interrupted') ||
-    msg.includes('IOException') ||
-    msg.includes('read timed out') ||
-    msg.includes('connection timed out') ||
-    // 弱网扩展：SSL 握手失败、链路重置、管道错误（4G/WiFi 切换时高发）
-    msg.includes('SSLException') ||
-    msg.includes('SSLHandshakeException') ||
-    msg.includes('handshake') ||
-    msg.includes('Broken pipe') ||
-    msg.includes('EPIPE') ||
-    msg.includes('Software caused connection abort') ||
-    msg.includes('Connection reset by peer') ||
-    msg.includes('No route to host') ||
-    msg.includes('EHOSTUNREACH') ||
-    msg.includes('ENETUNREACH') ||
-    msg.includes('Network is unreachable') ||
-    msg.includes('Host is unreachable') ||
-    // GitHub CDN 限速/过载（临时）
-    msg.includes('503') ||
-    msg.includes('429') ||
-    msg.includes('Too Many Requests') ||
-    msg.includes('Service Unavailable') ||
-    // 弱网扩展：502/504 网关超时（CDN 边缘节点过载）
-    msg.includes('502') ||
-    msg.includes('504') ||
-    msg.includes('Bad Gateway') ||
-    msg.includes('Gateway Timeout')
-  );
-}
-
-/**
- * 计算第 n 次重试的退避延迟（指数退避 + ±30% 随机抖动，上限 30s）
- * 抖动避免多任务同时重试时的"雷群效应"
- */
-function retryDelay(retryCount: number): number {
-  const base = Math.min(30_000, 1_000 * (2 ** retryCount));
-  const jitter = Math.floor(Math.random() * base * 0.3);
-  return base + jitter;
-}
-
-/**
- * 下载预检：发送 HEAD 请求获取文件大小和 Range 支持情况
- * - 用于下载开始前预填 totalBytes，让进度条从 0% 起就能显示文件大小
- * - 检测服务器是否支持 Accept-Ranges: bytes（为 Android 断点续传做标记）
- * - 任何失败均静默忽略，不阻断下载流程
- */
-async function probeDownloadUrl(url: string): Promise<{ contentLength: number; acceptsRange: boolean }> {
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8_000); // 8s 超时，避免阻塞下载启动
-    const res = await fetch(url, {
-      method: 'HEAD',
-      headers: { 'User-Agent': 'OpenAppStore/1.0' },
-      signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-    const contentLength = parseInt(res.headers.get('content-length') ?? '0', 10) || 0;
-    const acceptsRange = (res.headers.get('accept-ranges') ?? '').toLowerCase() === 'bytes';
-    return { contentLength, acceptsRange };
-  } catch {
-    return { contentLength: 0, acceptsRange: false };
-  }
-}
-
-/**
- * 将 URL 映射为稳定的 AsyncStorage key 后缀（不依赖 task ID）
- * 用于 iOS resumeData 跨会话持久化：App 重启后新 task 可通过 URL 找到旧 resumeData
- */
-function urlStableKey(url: string): string {
-  // 取 URL 末尾 100 字符并替换非法字符，保证唯一性同时控制 key 长度
-  return url.replace(/[^a-zA-Z0-9]/g, '_').slice(-100);
-}
-
 function mapErrorMessage(msg: string): string {
   if (!msg) return '下载失败，请重试';
   if (msg.includes('Network request failed') || msg.includes('Unable to resolve host'))
@@ -250,7 +148,7 @@ function mapErrorMessage(msg: string): string {
   if (msg.includes('Download interrupted') || msg.includes('IOException'))
     return '下载连接中断，请检查网络后重试';
   if (msg.includes('503') || msg.includes('429') || msg.includes('Too Many Requests'))
-    return '服务器繁忙，稍后自动重试';
+    return '服务器繁忙，请稍后重试';
   return msg;
 }
 
@@ -345,29 +243,26 @@ function applyProgress(id: string, bytesWritten: number, totalBytes: number) {
 }
 
 /**
- * 应用内下载（Android + iOS 统一）
+ * 应用内下载（Android + iOS 统一）——极简版
  *
- * 断点续传策略：
- *  - iOS：resumeData 以 URL 为 key 存入 AsyncStorage
- *         → 跨会话恢复：App 重启后重新入队同 URL，可从上次断点继续
- *  - Android：expo-file-system 不支持字节级续传
- *             下载前保存 { bytesWritten, totalBytes } 到 AsyncStorage（key = URL hash）
- *             重试时读取并预填进度条，提升弱网下的体验感知
+ * 核心原则：不与系统 HTTP 引擎对抗
+ *  - createDownloadResumable 底层 = iOS NSURLSession / Android OkHttp
+ *  - 系统引擎自带超时处理、重连、SSL 协商，无需额外干预
+ *  - 只处理：进度回调 → 更新 UI；成功 → 移入持久目录；失败 → 标记 failed
  *
- * 预检：
- *  - 下载前发 HEAD 请求获取 Content-Length，让进度条从第一帧就能展示文件大小
+ * 手动暂停/续传（iOS）：
+ *  - pause() 调用 savable() 保存 resumeData 到 AsyncStorage
+ *  - resume() → startTaskNative() 读取 resumeData 并传入 createDownloadResumable
  */
 async function startTaskNative(id: string) {
   const task = tasks.get(id);
   if (!task) return;
-  // 防重入①：activeSessions 已存在 → DownloadResumable 已建立，直接忽略
+  // 防重入①：DownloadResumable 已建立
   if (activeSessions.has(id)) return;
-  // 防重入②：launchingSet 已登记 → 正在初始化中（probeDownloadUrl 等），直接忽略（BUG-A 修复）
+  // 防重入②：正在初始化中（launchingSet 保证 flushQueue 不重复选中同一任务）
   if (launchingSet.has(id)) return;
 
-  // ── 立即将 status 设为 'downloading' 并加入 launchingSet ────────────────────
-  // 必须在任何 await 之前完成，确保 flushQueue 不会在异步初始化期间重复选中此任务
-  // 旧版在 probeDownloadUrl（最长 8s）之后才改 status，导致 flushQueue 反复重启同一下载
+  // 立即标记 downloading — 必须在任何 await 之前，防止 flushQueue 重复触发
   launchingSet.add(id);
   task.status = 'downloading';
   task.error = null;
@@ -378,76 +273,43 @@ async function startTaskNative(id: string) {
   const fs = getFS()!;
   const tempDir = `${fs.documentDirectory ?? ''}dl_${id}/`;
   const localUri = `${tempDir}${task.filename}`;
-
-  // resumeData key 以 URL 为索引（而非 task ID），确保 App 重启后仍可找到旧续传数据
-  const resumeKey = `${RESUME_KEY_PREFIX}${urlStableKey(task.url)}`;
-  // Android：已下载字节数缓存 key（用于展示进度，不用于真正续传）
-  const partialKey = `${PARTIAL_KEY_PREFIX}${urlStableKey(task.url)}`;
+  const resumeKey = `${RESUME_KEY_PREFIX}${task.url.replace(/[^a-zA-Z0-9]/g, '_').slice(-100)}`;
 
   await fs.makeDirectoryAsync(tempDir, { intermediates: true }).catch(() => null);
 
-  // ── 预检 + resumeData 加载（并行） ────────────────────────────────────────
-  const [probeResult, resumeDataRaw] = await Promise.all([
-    probeDownloadUrl(task.url),
-    (async () => {
-      if (!IS_IOS) return null;
-      try {
-        const saved = await AsyncStorage.getItem(resumeKey);
-        if (!saved) return null;
-        const info = await fs.getInfoAsync(localUri).catch(() => ({ exists: false }));
-        if (!info.exists) {
-          await AsyncStorage.removeItem(resumeKey).catch(() => null);
-          return null;
-        }
-        return saved;
-      } catch { return null; }
-    })(),
-  ]);
-
-  // 预填 totalBytes（若 HEAD 成功）
-  if (probeResult.contentLength > 0 && task.totalBytes === 0) {
-    task.totalBytes = probeResult.contentLength;
-  }
-
-  // Android：读取上次下载的进度并预填（仅展示，不影响真实下载）
-  if (IS_ANDROID && task.bytesWritten === 0) {
+  // iOS：尝试加载断点数据（仅用于手动暂停后续传，不用于自动重试）
+  let resumeData: string | undefined;
+  if (IS_IOS) {
     try {
-      const saved = await AsyncStorage.getItem(partialKey);
+      const saved = await AsyncStorage.getItem(resumeKey);
       if (saved) {
-        const { bytesWritten: bw, totalBytes: tb } = JSON.parse(saved);
-        if (typeof bw === 'number' && bw > 0) {
-          task.bytesWritten = bw;
-          if (typeof tb === 'number' && tb > task.totalBytes) task.totalBytes = tb;
-          task.progress = task.totalBytes > 0 ? bw / task.totalBytes : -1;
+        const info = await fs.getInfoAsync(localUri).catch(() => ({ exists: false }));
+        if (info.exists) {
+          resumeData = saved;
+        } else {
+          await AsyncStorage.removeItem(resumeKey).catch(() => null);
         }
       }
     } catch { /* ignore */ }
   }
 
-  const resumeData: string | undefined = resumeDataRaw ?? undefined;
-
-  // Android 不用 resumeData，清除可能残留的旧数据
-  if (IS_ANDROID) {
-    await AsyncStorage.removeItem(resumeKey).catch(() => null);
-  }
-
-  // 进度/字节数重置（resumeData 存在时保留已有进度）
+  // 若无续传数据则重置进度
   if (!resumeData) {
-    task.progress = IS_IOS ? task.progress : 0;
-    task.bytesWritten = IS_IOS ? task.bytesWritten : 0;
-    if (!IS_IOS) task.totalBytes = probeResult.contentLength || 0;
+    task.progress = 0;
+    task.bytesWritten = 0;
+    task.totalBytes = 0;
+    notify(task);
   }
-  notify(task);
 
   let resumableRef: _FileSystem.DownloadResumable | null = null;
 
   const resumable = fs.createDownloadResumable(
-    task.url, localUri,
+    task.url,
+    localUri,
     { headers: { 'User-Agent': 'OpenAppStore/1.0' } },
     (dp: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => {
       applyProgress(id, dp.totalBytesWritten, dp.totalBytesExpectedToWrite);
-
-      // iOS：首次有进度立即保存断点，之后每 3s 保存一次（key = URL hash）
+      // iOS：首次有进度立即保存断点，之后每 3s 保存一次
       if (IS_IOS) {
         const now = Date.now();
         const isFirst = lastSaveTs === 0 && dp.totalBytesWritten > 0;
@@ -461,127 +323,68 @@ async function startTaskNative(id: string) {
           } catch { /* ignore */ }
         }
       }
-
-      // Android：每 5s 保存已下载字节数（供重启后展示）
-      if (IS_ANDROID) {
-        const now = Date.now();
-        if (now - lastAndroidSaveTs > 5_000 && dp.totalBytesWritten > 0) {
-          lastAndroidSaveTs = now;
-          AsyncStorage.setItem(partialKey, JSON.stringify({
-            bytesWritten: dp.totalBytesWritten,
-            totalBytes: dp.totalBytesExpectedToWrite,
-          })).catch(() => null);
-        }
-      }
     },
     resumeData ? JSON.parse(resumeData) : undefined,
   );
   resumableRef = resumable;
   let lastSaveTs = 0;
-  let lastAndroidSaveTs = 0;
   activeSessions.set(id, resumable);
-  launchingSet.delete(id); // DownloadResumable 已建立，移出启动集合
-
-  // ── 卡顿检测：STALL_INTERVAL_MS（30s）无新字节 → 取消并重试 ─────────────
-  // lastStallBytes 初始化为当前已写字节数（而非 0），避免首轮必过、掩盖即时卡顿
-  let lastStallBytes = task.bytesWritten;
-  const stallTimer = setInterval(() => {
-    const t = tasks.get(id);
-    if (!t || t.status !== 'downloading') { clearInterval(stallTimer); return; }
-
-    // BUG-B 修复：文件写入最后阶段进度回调可能停止，但下载实际已完成
-    // 当 bytesWritten 已达 totalBytes 的 99.9% 以上时，视为"即将完成"，跳过卡顿中断
-    // 避免误杀最后字节 → 导致重新从头下载
-    if (t.totalBytes > 0 && t.bytesWritten >= t.totalBytes * 0.999) {
-      clearInterval(stallTimer);
-      return;
-    }
-
-    if (t.bytesWritten === lastStallBytes) {
-      clearInterval(stallTimer);
-      // iOS：保存断点以便下次续传
-      if (IS_IOS) {
-        try {
-          const state = resumableRef?.savable();
-          if (state?.resumeData) {
-            AsyncStorage.setItem(resumeKey, JSON.stringify(state.resumeData)).catch(() => null);
-          }
-        } catch { /* ignore */ }
-      }
-      activeSessions.get(id)?.cancelAsync?.().catch(() => {});
-      activeSessions.delete(id);
-      speedSampler.delete(id); // 清除速度采样，避免续传后速度计算异常
-      if ((t._autoRetryCount ?? 0) < MAX_AUTO_RETRY) {
-        t._autoRetryCount = (t._autoRetryCount ?? 0) + 1;
-        t.status = 'pending';
-        t.error = `网络中断，自动重试 (${t._autoRetryCount}/${MAX_AUTO_RETRY})...`;
-        t.speed = 0; t.eta = -1;
-        notify(t);
-        setTimeout(() => flushQueue(), 2_000);
-      } else {
-        t.status = 'failed';
-        t.error = '下载超时，请检查网络后手动重试';
-        if (!IS_IOS) AsyncStorage.removeItem(resumeKey).catch(() => null);
-        cleanupTempDir(id);
-        notify(t);
-        flushQueue();
-      }
-    } else { lastStallBytes = t.bytesWritten; }
-  }, STALL_INTERVAL_MS);
+  launchingSet.delete(id);
 
   try {
     const result = await resumable.downloadAsync();
-    clearInterval(stallTimer);
     activeSessions.delete(id);
-    launchingSet.delete(id);
     speedSampler.delete(id);
     resumableRef = null;
-    // 下载完成，清除两种续传缓存
-    await Promise.all([
-      AsyncStorage.removeItem(resumeKey).catch(() => null),
-      AsyncStorage.removeItem(partialKey).catch(() => null),
-    ]);
+    await AsyncStorage.removeItem(resumeKey).catch(() => null);
 
     const t = tasks.get(id);
     if (!t) return;
+
+    // result 为 null = 被外部取消（pause / cancel）— 保留当前 status 不覆盖
     if (!result) {
-      // downloadAsync 返回 null = 被外部取消（stall/pause/cancel）
-      // stall 已将 status 置为 pending，直接放行让 flushQueue 重启
-      if (t.status !== 'downloading') { flushQueue(); return; }
-      // 意外的 null（未知原因中断）
-      t.status = 'failed'; t.error = '下载中断，请重试'; notify(t);
-      flushQueue(); return;
+      if (t.status === 'downloading') {
+        // 未预期的 null（系统层取消）→ 标记失败让用户手动重试
+        t.status = 'failed';
+        t.error = '下载中断，请重试';
+        notify(t);
+      }
+      flushQueue();
+      return;
     }
 
-    // 验证文件大小非零
+    // 验证文件非空
     const info = await fs.getInfoAsync(result.uri).catch(() => ({ exists: false }));
     const actualSize: number = info.exists ? ((info as any).size ?? 0) : 0;
     if (actualSize === 0) {
-      t.status = 'failed'; t.error = '下载文件大小为 0，请重试'; notify(t);
-      await cleanupTempDir(id); flushQueue(); return;
+      t.status = 'failed';
+      t.error = '下载文件大小为 0，请重试';
+      notify(t);
+      await cleanupTempDir(id);
+      flushQueue();
+      return;
     }
 
-    // 移入持久目录（Android FileProvider / iOS shareAsync 均可访问）
+    // 移入持久目录
     try {
       const permUri = await moveToPermanentStorage(result.uri, t.filename);
       t.localUri = permUri;
-      // Android：额外复制到公共 Downloads（不阻断主流程）
       if (IS_ANDROID) copyToPublicDownloads(permUri, t.filename);
     } catch {
-      // 移动失败则保留临时目录路径（安装仍可使用）
-      t.localUri = result.uri;
+      t.localUri = result.uri; // 移动失败保留临时路径，安装仍可使用
     }
-    // 清理临时目录（若文件已成功移走）
-    if (t.localUri !== result.uri) {
-      await cleanupTempDir(id);
-    }
+    if (t.localUri !== result.uri) await cleanupTempDir(id);
 
-    t.status = 'completed'; t.progress = 1; t.speed = 0; t.eta = 0;
-    t.bytesWritten = actualSize; t.totalBytes = actualSize;
+    t.status = 'completed';
+    t.progress = 1;
+    t.speed = 0;
+    t.eta = 0;
+    t.bytesWritten = actualSize;
+    t.totalBytes = actualSize;
     t.error = null;
-    notify(t); flushQueue();
+    notify(t);
+    flushQueue();
   } catch (e: any) {
-    clearInterval(stallTimer);
     activeSessions.delete(id);
     launchingSet.delete(id);
     speedSampler.delete(id);
@@ -589,29 +392,14 @@ async function startTaskNative(id: string) {
 
     const t = tasks.get(id);
     if (!t) { flushQueue(); return; }
-    // stall 处理器已将 status 置为 pending/paused/cancelled，catch 不再重复重试
+
+    // pause/cancel 已将 status 置为 paused/cancelled，不覆盖
     if (t.status !== 'downloading') { flushQueue(); return; }
 
-    const msg: string = e?.message ?? '';
-    if (isTransientError(msg) && (t._autoRetryCount ?? 0) < MAX_AUTO_RETRY) {
-      t._autoRetryCount = (t._autoRetryCount ?? 0) + 1;
-      const delay = retryDelay(t._autoRetryCount);
-      t.status = 'pending';
-      t.error = `网络波动，${delay >= 1000 ? `${Math.round(delay / 1000)}s 后` : ''}自动重试 (${t._autoRetryCount}/${MAX_AUTO_RETRY})...`;
-      t.speed = 0; t.eta = -1;
-      notify(t);
-      // RST_STREAM 类错误清除 resumeData，从头下（连接被服务端强制重置，续传数据无效）
-      const isReset = msg.includes('stream was reset') || msg.includes('CANCEL') || msg.includes('RST_STREAM');
-      if (isReset) {
-        await AsyncStorage.removeItem(resumeKey).catch(() => null);
-        await cleanupTempDir(id);
-        t.bytesWritten = 0; t.totalBytes = probeResult.contentLength || 0; t.progress = 0;
-      }
-      setTimeout(() => flushQueue(), delay);
-      return;
-    }
-
-    t.status = 'failed'; t.error = mapErrorMessage(msg); notify(t);
+    // 系统层抛出异常 → 标记失败，由用户决定是否重试（不自动重试）
+    t.status = 'failed';
+    t.error = mapErrorMessage(e?.message ?? '');
+    notify(t);
     await AsyncStorage.removeItem(resumeKey).catch(() => null);
     await cleanupTempDir(id);
     flushQueue();
@@ -675,7 +463,6 @@ export function enqueue(params: {
     id, ...params,
     status: 'pending', progress: 0, bytesWritten: 0, totalBytes: 0,
     speed: 0, eta: -1, localUri: null, error: null, createdAt: Date.now(),
-    _autoRetryCount: 0,
   };
   tasks.set(id, task);
   notify(task);
@@ -696,7 +483,6 @@ export function retry(oldId: string): string {
     owner: old.owner, repo: old.repo, avatarUrl: old.avatarUrl, version: old.version,
     status: 'pending', progress: 0, bytesWritten: 0, totalBytes: 0,
     speed: 0, eta: -1, localUri: null, error: null, createdAt: Date.now(),
-    _autoRetryCount: 0,
   };
   tasks.set(newId, task);
   notify(task);
@@ -714,7 +500,7 @@ export async function pause(id: string): Promise<void> {
     if (IS_IOS) {
       try {
         const state = session.savable();
-        const resumeKey = `${RESUME_KEY_PREFIX}${urlStableKey(task.url)}`;
+        const resumeKey = `${RESUME_KEY_PREFIX}${task.url.replace(/[^a-zA-Z0-9]/g, '_').slice(-100)}`;
         if (state.resumeData) {
           await AsyncStorage.setItem(resumeKey, JSON.stringify(state.resumeData)).catch(() => null);
         }
@@ -808,7 +594,7 @@ export async function pauseAll(): Promise<void> {
         if (IS_IOS) {
           try {
             const state = session.savable();
-            const resumeKey = `${RESUME_KEY_PREFIX}${urlStableKey(task.url)}`;
+            const resumeKey = `${RESUME_KEY_PREFIX}${task.url.replace(/[^a-zA-Z0-9]/g, '_').slice(-100)}`;
             if (state.resumeData) {
               AsyncStorage.setItem(resumeKey, JSON.stringify(state.resumeData)).catch(() => null);
             }
