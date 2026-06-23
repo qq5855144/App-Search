@@ -223,7 +223,6 @@ async function copyToPublicDownloads(localUri: string, filename: string): Promis
     // 在 Downloads 目录创建文件（同名自动覆盖：先删后建）
     const existingFiles = await SAF.readDirectoryAsync(dirUri).catch(() => [] as string[]);
     for (const existingUri of existingFiles) {
-      // SAF URI 格式：...%2F<filename>，取最后一段比较
       const existingName = decodeURIComponent(existingUri.split('%2F').pop() ?? '');
       if (existingName === filename) {
         await SAF.deleteAsync(existingUri).catch(() => null);
@@ -233,13 +232,8 @@ async function copyToPublicDownloads(localUri: string, filename: string): Promis
     const mimeType = getMimeType(filename);
     const newFileUri = await SAF.createFileAsync(dirUri, filename, mimeType);
 
-    // 读取源文件内容写入目标
-    const content = await _FileSystem.readAsStringAsync(localUri, {
-      encoding: _FileSystem.EncodingType.Base64,
-    });
-    await SAF.writeAsStringAsync(newFileUri, content, {
-      encoding: _FileSystem.EncodingType.Base64,
-    });
+    // 用 copyAsync 直接复制，避免 readAsStringAsync 把整个大文件读入内存导致 OOM
+    await _FileSystem.copyAsync({ from: localUri, to: newFileUri });
   } catch {
     // 复制失败不阻断主流程，安装包依然可从内部目录安装
   }
@@ -279,6 +273,8 @@ function applyProgress(id: string, bytesWritten: number, totalBytes: number) {
 async function startTaskNative(id: string) {
   const task = tasks.get(id);
   if (!task) return;
+  // 防重入：若该 id 已有活跃 session，说明 stall+catch 同时触发了双重启动，直接忽略
+  if (activeSessions.has(id)) return;
 
   const fs = getFS()!;
   const tempDir = `${fs.documentDirectory ?? ''}dl_${id}/`;
@@ -312,9 +308,10 @@ async function startTaskNative(id: string) {
     { headers: { 'User-Agent': 'OpenAppStore/1.0' } },
     (dp: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => {
       applyProgress(id, dp.totalBytesWritten, dp.totalBytesExpectedToWrite);
-      // 每 3 秒持久化断点
+      // 首次有进度立即保存断点，之后每 3s 保存一次
       const now = Date.now();
-      if (now - lastSaveTs > 3000 && resumableRef) {
+      const isFirst = lastSaveTs === 0 && dp.totalBytesWritten > 0;
+      if ((isFirst || now - lastSaveTs > 3000) && resumableRef) {
         lastSaveTs = now;
         try {
           const state = resumableRef.savable();
@@ -411,7 +408,8 @@ async function startTaskNative(id: string) {
 
     const t = tasks.get(id);
     if (!t) { flushQueue(); return; }
-    if (t.status === 'cancelled' || t.status === 'paused') { flushQueue(); return; }
+    // stall 处理器已将 status 置为 pending/paused/cancelled，catch 不再重复重试
+    if (t.status !== 'downloading') { flushQueue(); return; }
 
     const msg: string = e?.message ?? '';
     if (isTransientError(msg) && (t._autoRetryCount ?? 0) < MAX_AUTO_RETRY) {
