@@ -192,7 +192,7 @@ async function startTaskAndroid(id: string) {
     .fetch('GET', task.url, {
       'User-Agent': 'OpenAppStore/1.0',
     })
-    .progress({ count: 10, interval: 250 }, (received: string, total: string) => {
+    .progress({ count: 10, interval: 250 }, (received: number, total: number) => {
       applyProgress(id, Number(received), Number(total));
     });
 
