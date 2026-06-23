@@ -6,7 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { getFavorites, removeFavorite, addFavorite, isFavorite } from '@/lib/database';
 import { getToken } from '@/lib/token';
-import { fetchUserStarred } from '@/lib/github';
+import { fetchUserStarred, unstarRepo } from '@/lib/github';
 import type { FavoriteItem } from '@/types';
 import AppIcon from '@/components/openappstore/AppIcon';
 
@@ -166,7 +166,10 @@ export default function FavoritesScreen() {
                 </Text>
               </View>
             </View>
-            <Pressable onPress={() => removeFavorite(item.app_id).then(load)} hitSlop={10}>
+            <Pressable onPress={() => {
+              unstarRepo(item.owner, item.repo).catch(() => {});
+              removeFavorite(item.app_id).then(load);
+            }} hitSlop={10}>
               <Ionicons name="heart" size={20} color="#FF4D88" />
             </Pressable>
           </Pressable>

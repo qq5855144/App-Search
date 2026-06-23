@@ -4,7 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useAndroidGoBack } from '@/hooks/useAndroidGoBack';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { fetchRepoDetail, fetchReleases, fetchReadme, getPlatformFromFilename, filterInstallAssets, filterVerificationAssets } from '@/lib/github';
+import { fetchRepoDetail, fetchReleases, fetchReadme, getPlatformFromFilename, filterInstallAssets, filterVerificationAssets, checkIfStarred, starRepo, unstarRepo } from '@/lib/github';
 import { addFavorite, removeFavorite, isFavorite, addDownloadRecord } from '@/lib/database';
 import { addAppEvent } from '@/lib/events';
 import type { AppItem, GitHubRelease } from '@/types';
@@ -300,7 +300,17 @@ export default function DetailScreen() {
         if (installRels.length > 0) setExpandedRelease(installRels[0].id);
         setReadme(md);
         const f = await isFavorite(detail.id).catch(() => false);
-        setFavored(f);
+        // 有 Token 时以 GitHub 实际 star 状态为准，并同步本地收藏
+        const ghStarred = await checkIfStarred(detail.owner, detail.repo);
+        if (ghStarred !== null) {
+          // GitHub 已 star 但本地未收藏 → 补录本地
+          if (ghStarred && !f) await addFavorite(detail).catch(() => {});
+          // 本地收藏但 GitHub 未 star → 以 GitHub 为准，清除本地
+          if (!ghStarred && f) await removeFavorite(detail.id).catch(() => {});
+          setFavored(ghStarred);
+        } else {
+          setFavored(f);
+        }
       } catch (e: any) {
         if (cancelled) return;
         const msg = e?.message || '加载失败';
@@ -338,10 +348,16 @@ export default function DetailScreen() {
   const toggleFav = async () => {
     if (!app) return;
     if (favored) {
-      await removeFavorite(app.id); setFavored(false);
+      // 取消收藏：本地移除 + 取消 GitHub Star（有 Token 时）
+      await removeFavorite(app.id);
+      setFavored(false);
+      unstarRepo(app.owner, app.repo).catch(() => {});
       addAppEvent({ event_type: 'favorite', app_id: app.id, app_name: app.name, owner: owner ?? '', repo: repo ?? '', avatar_url: app.avatar_url ?? '' }).catch(() => {});
     } else {
-      await addFavorite(app); setFavored(true);
+      // 添加收藏：本地保存 + 给 GitHub 打 Star（有 Token 时）
+      await addFavorite(app);
+      setFavored(true);
+      starRepo(app.owner, app.repo).catch(() => {});
       addAppEvent({ event_type: 'favorite', app_id: app.id, app_name: app.name, owner: owner ?? '', repo: repo ?? '', avatar_url: app.avatar_url ?? '' }).catch(() => {});
     }
   };

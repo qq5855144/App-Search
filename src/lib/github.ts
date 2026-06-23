@@ -657,6 +657,64 @@ export async function fetchUserStarred(): Promise<AppItem[]> {
   return results
 }
 
+/**
+ * 检查当前 Token 用户是否已 Star 某个仓库
+ * 返回 true=已star, false=未star, null=无token或请求失败
+ */
+export async function checkIfStarred(owner: string, repo: string): Promise<boolean | null> {
+  if (!cachedToken) return null
+  try {
+    const res = await fetch(`${GITHUB_API}/user/starred/${owner}/${repo}`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': `Bearer ${cachedToken}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    })
+    if (res.status === 204) return true   // 已 Star
+    if (res.status === 404) return false  // 未 Star
+    return null                           // 其他错误（限速等）
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 给仓库打 Star（需要有效 Token，无 Token 时静默跳过）
+ */
+export async function starRepo(owner: string, repo: string): Promise<void> {
+  if (!cachedToken) return
+  try {
+    await fetch(`${GITHUB_API}/user/starred/${owner}/${repo}`, {
+      method: 'PUT',
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': `Bearer ${cachedToken}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Length': '0',
+      },
+    })
+  } catch { /* 静默失败，本地收藏已保存 */ }
+}
+
+/**
+ * 取消仓库 Star（需要有效 Token，无 Token 时静默跳过）
+ */
+export async function unstarRepo(owner: string, repo: string): Promise<void> {
+  if (!cachedToken) return
+  try {
+    await fetch(`${GITHUB_API}/user/starred/${owner}/${repo}`, {
+      method: 'DELETE',
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': `Bearer ${cachedToken}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    })
+  } catch { /* 静默失败，本地收藏已移除 */ }
+}
+
 export async function fetchRateLimit(): Promise<{ remaining: number; limit: number; reset: number }> {
   try {
     const data = await callEdgeFunction({
