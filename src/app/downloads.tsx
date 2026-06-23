@@ -2,7 +2,7 @@
  * 下载管理页面 v2
  *
  * 功能：
- * - 进行中：进度环 + 进度条、速度/ETA、暂停（仅 iOS）/恢复/取消/重试
+ * - 进行中：进度环（内显百分比）、速度/ETA、暂停（仅 iOS）/恢复/取消/重试
  * - 已完成：文件大小、安装/打开/删除
  * - 已安装：检查更新/忽略/移除记录
  * - 通知权限提示条
@@ -34,11 +34,14 @@ const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
 type TabKey = 'active' | 'done' | 'installed';
 
-// ── 进度环 ────────────────────────────────────────────────
+// ── 进度环（百分比显示在圆心）────────────────────────────
 function ProgressCircle({ progress, status }: { progress: number; status: string }) {
   const isIndeterminate = progress < 0 && status === 'downloading';
+  const isDownloading = status === 'downloading';
   const offset = isIndeterminate ? 0 : CIRCUMFERENCE * (1 - Math.min(progress, 1));
   const color = status === 'failed' ? RED : status === 'completed' ? GREEN : BLUE;
+  const pct = progress >= 0 ? Math.round(Math.min(progress, 1) * 100) : null;
+
   return (
     <View style={{ width: 44, height: 44 }}>
       {isIndeterminate ? (
@@ -57,24 +60,20 @@ function ProgressCircle({ progress, status }: { progress: number; status: string
       )}
       {!isIndeterminate && (
         <View style={{ position: 'absolute', inset: 0, alignItems: 'center', justifyContent: 'center' }}>
-          <Ionicons
-            name={status === 'completed' ? 'checkmark' : status === 'failed' ? 'close' :
-              status === 'paused' ? 'pause' : 'arrow-down'}
-            size={15} color={color}
-          />
+          {/* 下载中且有确切进度：圆心显示百分比；其余状态显示图标 */}
+          {isDownloading && pct != null ? (
+            <Text style={{ fontSize: 10, fontWeight: '700', color, lineHeight: 12 }}>
+              {pct}%
+            </Text>
+          ) : (
+            <Ionicons
+              name={status === 'completed' ? 'checkmark' : status === 'failed' ? 'close' :
+                status === 'paused' ? 'pause' : 'arrow-down'}
+              size={15} color={color}
+            />
+          )}
         </View>
       )}
-    </View>
-  );
-}
-
-// ── 细进度条 ──────────────────────────────────────────────
-function ProgressBar({ progress }: { progress: number }) {
-  if (progress <= 0) return null;
-  const pct = Math.min(progress, 1) * 100;
-  return (
-    <View style={{ height: 3, backgroundColor: '#EBEBEB', borderRadius: 2, marginTop: 6, overflow: 'hidden' }}>
-      <View style={{ width: `${pct}%`, height: '100%', backgroundColor: BLUE, borderRadius: 2 }} />
     </View>
   );
 }
@@ -253,9 +252,7 @@ export default function DownloadsScreen() {
 
             {isDownloading && (
               <View style={{ gap: 1 }}>
-                {pct != null
-                  ? <Text style={{ fontSize: 12, color: BLUE, fontWeight: '600' }}>{pct}%</Text>
-                  : <Text style={{ fontSize: 12, color: BLUE, fontWeight: '600' }}>下载中…</Text>}
+                {pct == null && <Text style={{ fontSize: 12, color: BLUE, fontWeight: '600' }}>下载中…</Text>}
                 {spd ? <Text style={{ fontSize: 11, color: '#999' }}>{spd}</Text> : null}
                 {(item.totalBytes > 0 || item.eta > 0) && (
                   <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
@@ -303,8 +300,7 @@ export default function DownloadsScreen() {
           </View>
         </View>
 
-        {/* 细进度条：只在有明确进度时显示 */}
-        {isDownloading && <ProgressBar progress={item.progress} />}
+        {/* 细进度条已移除，百分比显示在圆心 */}
       </View>
     );
   };
