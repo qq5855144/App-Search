@@ -38,6 +38,7 @@ export default function HomeTab() {
   const [hasMore, setHasMore] = useState(true);
   const [activeCategory, setActiveCategory] = useState('latest');
   const loadingRef = useRef(false);
+  const lastLoadedAtRef = useRef(0);  // 记录上次加载时间戳
 
   const loadData = useCallback(async (pageNum = 1, isRefresh = false, catKey = activeCategory) => {
     if (loadingRef.current && !isRefresh) return;
@@ -71,11 +72,16 @@ export default function HomeTab() {
       setLoadingMore(false);
       setRefreshing(false);
       loadingRef.current = false;
+      if (pageNum === 1) lastLoadedAtRef.current = Date.now();
     }
   }, [activeCategory]);
 
   useFocusEffect(useCallback(() => {
-    if (apps.length === 0) loadData(1, false);
+    const STALE_MS = 5 * 60 * 1000; // 5分钟
+    const isStale = Date.now() - lastLoadedAtRef.current > STALE_MS;
+    if (apps.length === 0 || isStale) {
+      loadData(1, false);
+    }
   }, [apps.length, loadData]));
 
   // 双击退出：传统 BackHandler 链路（enableOnBackInvokedCallback=false 后正常工作）

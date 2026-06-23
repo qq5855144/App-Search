@@ -50,7 +50,7 @@ export default function DiscoverTab() {
   const [error, setError] = useState<string>('');
   const loadingRef = useRef(false);
   const pageRef = useRef(1);
-  const hasFetchedRef = useRef(false);
+  const lastLoadedAtRef = useRef(0); // 记录上次加载时间戳
 
   const loadData = useCallback(async (
     pageNum = 1, isRefresh = false,
@@ -58,7 +58,6 @@ export default function DiscoverTab() {
   ) => {
     if (loadingRef.current && !isRefresh) return;
     loadingRef.current = true;
-    hasFetchedRef.current = true;
     setError('');
     if (isRefresh) setRefreshing(true);
     else if (pageNum === 1) setLoading(true);
@@ -85,22 +84,24 @@ export default function DiscoverTab() {
       setLoadingMore(false);
       setRefreshing(false);
       loadingRef.current = false;
+      if (pageNum === 1) lastLoadedAtRef.current = Date.now();
     }
   }, [platform, category, sort]);
 
   const handleClearCacheAndReload = async () => {
     await clearAllCache();
-    hasFetchedRef.current = false;
+    lastLoadedAtRef.current = 0;
     pageRef.current = 1;
     setApps([]);
     setHasMore(false);
     loadData(1, false);
   };
 
-  // 只在首次进入页面时加载，不依赖 apps.length
-  // 依赖 apps.length 会导致：enrichAppsInBackground 过滤后 apps 变空 → 再次触发 → 无限循环
+  // 5分钟内已加载过则不重复请求；超过5分钟或首次进入则刷新
   useFocusEffect(useCallback(() => {
-    if (!hasFetchedRef.current) loadData(1, false);
+    const STALE_MS = 5 * 60 * 1000;
+    const isStale = Date.now() - lastLoadedAtRef.current > STALE_MS;
+    if (isStale) loadData(1, false);
   }, [loadData]));
 
   const reset = (p: string, cat: string, s: string) => {
@@ -120,8 +121,8 @@ export default function DiscoverTab() {
         onRefresh={() => { pageRef.current = 1; loadData(1, true); }}
         refreshing={refreshing}
         onEndReached={() => {
-          // hasFetchedRef 守卫：避免初始空列表立即触发、抢在 page1 前加载 page2
-          if (hasFetchedRef.current && !loadingRef.current && hasMore) {
+          // lastLoadedAtRef>0 表示首次加载已完成，避免初始空列表触发、抢在 page1 前加载 page2
+          if (lastLoadedAtRef.current > 0 && !loadingRef.current && hasMore) {
             const n = pageRef.current + 1;
             loadData(n);
           }
@@ -188,7 +189,7 @@ export default function DiscoverTab() {
           </View>
         }
         ListEmptyComponent={
-          (loading || !hasFetchedRef.current)
+          (loading || lastLoadedAtRef.current === 0)
             ? <View style={{ padding: 16 }}>{[1,2,3,4].map((i) => <SkeletonCard key={i} />)}</View>
             : <View style={{ alignItems: 'center', paddingTop: 60, paddingHorizontal: 32 }}>
                 <View style={{

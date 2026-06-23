@@ -41,7 +41,7 @@ function base64Decode(str: string): string {
  */
 const _installableCache = new Map<string, boolean>()
 
-const INSTALLABLE_TTL = 24 * DAY  // 持久化缓存 24h
+const INSTALLABLE_TTL = 2 * HOUR  // 持久化缓存 2h（原误写为 24*DAY=576h）
 const _installableCacheKey = (owner: string, repo: string) => `installable:${owner}/${repo}`
 
 /** 读取持久化缓存，同时写入内存 Map */
@@ -495,7 +495,7 @@ export async function fetchReleases(owner: string, repo: string, page = 1, bypas
   }
   // bypassCache 时不写入本地缓存，确保下次仍能取到最新数据
   if (result.length > 0 && !bypassCache) {
-    await setCache(cacheKey, result, DAY)
+    await setCache(cacheKey, result, 2 * HOUR)  // 原 DAY(24h)，缩短为 2h 确保版本及时更新
   }
   return result
 }

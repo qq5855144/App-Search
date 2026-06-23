@@ -40,9 +40,9 @@ function makeSupabase() {
   return createClient(url, key, { auth: { persistSession: false } })
 }
 
-/** 缓存有效期：has_release=true 缓存7天，false 缓存1天（可能新增发行版） */
-const CACHE_TTL_HAS  = 7 * 24 * 60 * 60 * 1000  // 7天
-const CACHE_TTL_NONE = 1 * 24 * 60 * 60 * 1000  // 1天
+/** 缓存有效期：has_release=true 缓存6小时，false 缓存12小时（可能新增发行版） */
+const CACHE_TTL_HAS  = 6 * 60 * 60 * 1000   // 6小时（原7天，版本号过期太慢）
+const CACHE_TTL_NONE = 12 * 60 * 60 * 1000  // 12小时
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
