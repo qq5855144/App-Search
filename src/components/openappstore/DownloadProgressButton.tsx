@@ -8,12 +8,12 @@ import React from 'react';
  * - 失败：显示错误摘要 + 重试按钮
  * - 重试：清除旧任务再重新入队，彻底解决重试无效问题
  */
-import { View, Text, Pressable, Platform } from 'react-native';
+import { View, Text, Pressable, Platform, Linking } from 'react-native';
 import { useEffect, useRef, useState } from 'react';
 import Svg, { Circle } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
 import { useDownload } from '@/ctx/DownloadContext';
-import { formatSpeed, getMimeType, isInstallerFile } from '@/lib/downloadManager';
+import { formatSpeed, getMimeType, isInstallerFile, BROWSER_DOWNLOAD_MARKER } from '@/lib/downloadManager';
 import type { DownloadTask } from '@/lib/downloadManager';
 
 interface Props {
@@ -86,19 +86,19 @@ export default function DownloadProgressButton({
   // 文件打开失败时的内联错误提示
   const [openError, setOpenError] = useState<string | null>(null);
 
-  // 下载完成后自动调起安装器（仅 Android APK）
+  // 下载完成后自动调起安装器（仅 iOS APK / 非系统下载任务）
   // 初始值：若挂载时任务已完成则置 true，避免页面切换回来时重复弹窗
   const autoInstallFiredRef = useRef(task?.status === 'completed');
   useEffect(() => {
     if (
       status === 'completed' &&
       task?.localUri &&
+      task.localUri !== BROWSER_DOWNLOAD_MARKER && // Android 系统下载不自动弹
       filename.toLowerCase().endsWith('.apk') &&
       Platform.OS === 'android' &&
       !autoInstallFiredRef.current
     ) {
       autoInstallFiredRef.current = true;
-      // 验证 localUri 可访问（动态 import 避免 Hermes 同步 require 问题）
       import('expo-file-system').then((fs) => {
         fs.getInfoAsync(task.localUri!).then((info: any) => {
           if (info.exists) {
@@ -126,7 +126,12 @@ export default function DownloadProgressButton({
       return;
     }
     if (status === 'completed') {
-      if (task.localUri) {
+      if (task.localUri === BROWSER_DOWNLOAD_MARKER) {
+        // Android 系统下载：文件由系统 DownloadManager 托管，打开系统下载页
+        Linking.openURL('content://downloads/my_downloads').catch(() =>
+          Linking.openURL('content://downloads').catch(() => null)
+        );
+      } else if (task.localUri) {
         const { ok, error } = await openLocalFile(task.localUri, filename);
         if (!ok && error) setOpenError(error);
       } else {
@@ -141,6 +146,29 @@ export default function DownloadProgressButton({
 
   // ── 已完成 ──────────────────────────────────────────
   if (status === 'completed') {
+    // Android 系统下载：文件由系统 DownloadManager 托管，显示"在通知栏查看"
+    if (task?.localUri === BROWSER_DOWNLOAD_MARKER) {
+      return (
+        <View style={{ alignItems: 'flex-end', gap: 4 }}>
+          <Pressable
+            onPress={handlePress}
+            style={{
+              paddingHorizontal: compact ? 12 : 16,
+              paddingVertical: compact ? 6 : 9,
+              borderRadius: 24,
+              backgroundColor: GREEN,
+            }}
+          >
+            <Text style={{ fontSize: compact ? 12 : 13, fontWeight: '600', color: '#FFFFFF' }}>
+              查看下载
+            </Text>
+          </Pressable>
+          <Text style={{ fontSize: 10, color: '#999999', maxWidth: 120, textAlign: 'right' }}>
+            在通知栏或系统下载中查看
+          </Text>
+        </View>
+      );
+    }
     return (
       <View style={{ alignItems: 'flex-end', gap: 4 }}>
         <Pressable

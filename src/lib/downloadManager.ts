@@ -23,7 +23,7 @@
  *  - stall 卡顿检测 + 自动重试：强制 cancelAsync → 系统引擎本身会等待/重连，我们的取消反而干扰
  *  - catch 块指数退避重试：在系统重试之上叠加，导致无限重新下载
  */
-import { Platform } from 'react-native';
+import { Platform, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as _FileSystem from 'expo-file-system/legacy';
 
@@ -34,6 +34,14 @@ const MAX_CONCURRENT = 3;
 const PERM_DIR_NAME = 'dl_perm';
 const RESUME_KEY_PREFIX = '@openappstore/resume_';
 const SAF_PERM_KEY = '@openappstore/saf_downloads_uri';
+
+/**
+ * Android 系统下载任务的 localUri 占位标记。
+ * Android 使用 Linking.openURL 将下载交给系统浏览器/DownloadManager，
+ * 文件由系统托管（存入系统 Downloads 目录），应用无法获取本地路径，
+ * 因此用此常量标记"由系统接管，无应用内路径"。
+ */
+export const BROWSER_DOWNLOAD_MARKER = '__browser__';
 
 function getFS(): typeof _FileSystem | null {
   return IS_WEB ? null : _FileSystem;
@@ -272,6 +280,29 @@ async function startTaskNative(id: string) {
   task.eta = -1;
   notify(task);
 
+  // ── Android：完全交给系统下载器 ──────────────────────────────────────────────
+  // 根因：expo-file-system (OkHttp HTTP/2) 在跟随 GitHub 302 重定向时持续抛出
+  // "stream was reset: CANCEL"，是 OkHttp 层已知的 HTTP/2 跨域重定向行为差异。
+  // 彻底解法：Linking.openURL 将 URL 交给系统浏览器/DownloadManager，
+  // 系统引擎原生处理重定向、SSL、断点续传，下载进度显示在通知栏。
+  if (IS_ANDROID) {
+    launchingSet.delete(id);
+    try {
+      await Linking.openURL(task.url);
+      task.status = 'completed';
+      task.progress = 1;
+      task.localUri = BROWSER_DOWNLOAD_MARKER; // 文件由系统 Downloads 托管
+      task.error = null;
+    } catch (e: any) {
+      task.status = 'failed';
+      task.error = '无法调起系统下载，请检查网络或手动复制链接';
+    }
+    notify(task);
+    flushQueue();
+    return;
+  }
+
+  // ── iOS / 其他平台：expo-file-system (NSURLSession) ──────────────────────────
   const fs = getFS()!;
   const tempDir = `${fs.documentDirectory ?? ''}dl_${id}/`;
   const localUri = `${tempDir}${task.filename}`;
