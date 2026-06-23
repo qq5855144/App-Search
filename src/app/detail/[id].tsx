@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { View, Text, Pressable, ScrollView, ActivityIndicator, Linking, Platform, useWindowDimensions } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useAndroidGoBack } from '@/hooks/useAndroidGoBack';
@@ -24,53 +24,13 @@ function formatCount(n: number) {
   return String(n);
 }
 
-// ─── WebView README 渲染：使用 marked + highlight.js 完整支持 GFM ─────────────
-import { WebView } from 'react-native-webview';
+// ─── README 渲染：Native 用 WebView，Web 用 dangerouslySetInnerHTML ─────────────
+// react-native-webview 不支持 web 平台，使用 lazy import() 避免模块解析失败
+// import() 是真正的异步动态导入，Metro 不会在 web 打包时尝试解析 native 模块
 
-/**
- * GitHub Flavored Markdown 渲染器
- * 使用 WebView + marked + highlight.js 完整支持：
- *  - 表格、任务列表、删除线、表情符号
- *  - 代码块语法高亮（highlight.js）
- *  - Alerts/Admonitions（NOTE/TIP/WARNING）
- *  - 图片（shields.io 强制 PNG）
- *  - 相对链接自动补全 baseUrl
- * 渲染效果与 GitHub 一致。
- */
-function MarkdownWebView({ content, owner, repo }: { content: string; owner: string; repo: string }) {
-  const [webViewHeight, setWebViewHeight] = useState(200);
-  const { width } = useWindowDimensions();
-
-  if (!content) return null;
-
-  // 预处理：去除 YAML frontmatter
-  const cleaned = content.replace(/^---[\s\S]*?---\r?\n?/, '').trim();
-  if (!cleaned) return null;
-
-  const baseUrl = `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/`;
-
-  // 转义 markdown 内容以安全注入 HTML
-  const escapedMd = cleaned
-    .replace(/\\/g, '\\\\')
-    .replace(/`/g, '\\`')
-    .replace(/\$/g, '\\$')
-    .replace(/<\/(script|style)>/gi, '<\\/$1>');
-
-  const html = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"><\/script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"><\/script>
-<style>
+const README_CSS = `
   * { box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
-    font-size: 14px; line-height: 1.6; color: #1F2328;
-    padding: 0; margin: 0; word-wrap: break-word; overflow-wrap: break-word;
-  }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #1F2328; padding: 0; margin: 0; word-wrap: break-word; overflow-wrap: break-word; }
   h1 { font-size: 1.8em; border-bottom: 1px solid #d8dee4; padding-bottom: .3em; margin: 24px 0 16px; }
   h2 { font-size: 1.4em; border-bottom: 1px solid #d8dee4; padding-bottom: .3em; margin: 24px 0 16px; }
   h3 { font-size: 1.15em; margin: 24px 0 16px; }
@@ -82,7 +42,7 @@ function MarkdownWebView({ content, owner, repo }: { content: string; owner: str
   code { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; font-size: 85%; background: rgba(175,184,193,0.2); border-radius: 3px; padding: 2px 4px; }
   pre { background: #f6f8fa; border-radius: 6px; padding: 12px; overflow-x: auto; }
   pre code { background: none; padding: 0; font-size: 85%; }
-  table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; display: block; overflow-x: auto; }
   th, td { border: 1px solid #d8dee4; padding: 6px 10px; text-align: left; }
   th { background: #f6f8fa; font-weight: 600; }
   tr:nth-child(even) { background: #f8f9fa; }
@@ -91,71 +51,116 @@ function MarkdownWebView({ content, owner, repo }: { content: string; owner: str
   li { margin: 2px 0; }
   hr { border: none; border-top: 1px solid #d8dee4; margin: 24px 0; }
   .task-list-item { list-style: none; margin-left: -20px; }
-  .task-list-item input { margin-right: 6px; }
-  /* GitHub Alerts */
   .markdown-alert { padding: 8px 16px; margin: 8px 0; border-left: 4px solid; border-radius: 4px; }
   .markdown-alert-note { background: #ddf4ff; border-color: #0969da; }
   .markdown-alert-tip { background: #dafbe1; border-color: #1a7f37; }
   .markdown-alert-warning { background: #fff8c5; border-color: #9a6700; }
   .markdown-alert-caution { background: #ffebe9; border-color: #cf222e; }
   .markdown-alert-title { font-weight: 600; margin-bottom: 4px; }
-</style>
-</head>
-<body>
-<div id="content"></div>
-<script>
-  marked.setOptions({
-    gfm: true,
-    breaks: false,
-    highlight: function(code, lang) {
-      if (lang && hljs.getLanguage(lang)) {
-        try { return hljs.highlight(code, { language: lang }).value; }
-        catch(e) { /* fall through */ }
-      }
+`;
+
+function buildReadmeJs(escapedMd: string, baseUrl: string) {
+  return `
+    marked.setOptions({ gfm: true, breaks: false, highlight: function(code, lang) {
+      if (lang && hljs.getLanguage(lang)) { try { return hljs.highlight(code, { language: lang }).value; } catch(e) {} }
       return hljs.highlightAuto(code).value;
-    }
-  });
+    }});
+    var md = \`${escapedMd}\`;
+    md = md.replace(/\\]\\\\(((?!https?:\\/\\/)[^)]+)\\\\)/g, function(m, p1) { return '](' + '${baseUrl.replace(/'/g, "\\'")}' + p1 + ')'; });
+    md = md.replace(/!\\[[^\\]]*\\]\\(((?!https?:\\/\\/)[^)]+)\\)/g, function(m, p1) { return m.replace(p1, '${baseUrl.replace(/'/g, "\\'")}' + p1); });
+    document.getElementById('md-content').innerHTML = marked.parse(md);
+    document.querySelectorAll('img').forEach(function(img) { if (/shields\\.io|badge\\.svg|badgen\\.net/i.test(img.src)) { img.src = img.src + (img.src.includes('?') ? '&format=png' : '?format=png'); } });
+    setTimeout(function() {
+      var h = document.getElementById('md-content').scrollHeight;
+      window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'height', height: h }));
+    }, 300);
+  `;
+}
 
-  var md = \`${escapedMd}\`;
+/**
+ * GitHub Flavored Markdown 渲染器
+ * Native: WebView + marked + highlight.js
+ * Web:    div + dangerouslySetInnerHTML + CDN
+ */
+function MarkdownSection({ content, owner, repo }: { content: string; owner: string; repo: string }) {
+  const [webViewHeight, setWebViewHeight] = useState(200);
+  const [WebViewComp, setWebViewComp] = useState<any>(undefined);
+  const { width } = useWindowDimensions();
+  const loadAttempted = useRef(false);
 
-  // 相对链接补全 baseUrl
-  md = md.replace(/\\]\\\\(((?!https?:\\/\\/)[^)]+)\\\\)/g, function(m, p1) {
-    return '](' + '${baseUrl.replace(/'/g, "\\'")}' + p1 + ')';
-  });
+  // 懒加载 react-native-webview（仅 Native 平台）
+  useEffect(() => {
+    if (Platform.OS === 'web' || loadAttempted.current) return;
+    loadAttempted.current = true;
+    import('react-native-webview').then(
+      (m) => { setWebViewComp(() => m.WebView); },
+      () => { setWebViewComp(null); },
+    );
+  }, []);
 
-  // 图片链接补全
-  md = md.replace(/!\\[[^\\]]*\\]\\(((?!https?:\\/\\/)[^)]+)\\)/g, function(m, p1) {
-    return m.replace(p1, '${baseUrl.replace(/'/g, "\\'")}' + p1);
-  });
+  if (!content) return null;
 
-  document.getElementById('content').innerHTML = marked.parse(md);
+  const cleaned = content.replace(/^---[\s\S]*?---\r?\n?/, '').trim();
+  if (!cleaned) return null;
 
-  // 转 shields.io SVG → PNG
-  document.querySelectorAll('img').forEach(function(img) {
-    if (/shields\\.io|badge\\.svg|badgen\\.net/i.test(img.src)) {
-      img.src = img.src + (img.src.includes('?') ? '&format=png' : '?format=png');
-    }
-  });
+  const baseUrl = `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/`;
+  const escapedMd = cleaned
+    .replace(/\\/g, '\\\\')
+    .replace(/`/g, '\\`')
+    .replace(/\$/g, '\\$')
+    .replace(/<\/(script|style)>/gi, '<\\/$1>');
 
-  // 通知 RN 高度
-  setTimeout(function() {
-    var h = document.body.scrollHeight;
-    window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'height', height: h }));
-  }, 200);
-</script>
-</body>
-</html>`;
+  const js = buildReadmeJs(escapedMd, baseUrl);
+  const fullHtml = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css"><script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"><\\/script><script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"><\\/script><style>${README_CSS}</style></head><body><div id="md-content"></div><script>${js}<\\/script></body></html>`;
+
+  const header = (
+    <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A', marginBottom: 10 }}>README</Text>
+  );
+
+  // ── Web 平台：直接渲染 HTML 到 div ──────────────────────────────────────────
+  if (Platform.OS === 'web') {
+    return (
+      <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4 }}>
+        {header}
+        {/* @ts-ignore web only */}
+        <div
+          style={{ width: '100%', fontSize: 14, lineHeight: '22px', color: '#555', wordBreak: 'break-word' }}
+          dangerouslySetInnerHTML={{ __html: `<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css"><style>${README_CSS}</style><div id="md-content"></div><script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"><\\/script><script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"><\\/script><script>${js}<\\/script>` }}
+        />
+      </View>
+    );
+  }
+
+  // ── Native 平台：WebView 加载中 ─────────────────────────────────────────────
+  if (WebViewComp === undefined) {
+    return (
+      <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4 }}>
+        {header}
+        <ActivityIndicator color="#1677FF" style={{ paddingVertical: 12 }} />
+      </View>
+    );
+  }
+
+  // ── Native 平台：WebView 加载失败 ───────────────────────────────────────────
+  if (WebViewComp === null) {
+    return (
+      <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4 }}>
+        {header}
+        <Text style={{ color: '#999', fontSize: 13 }}>当前平台不支持 README 渲染</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4 }}>
-      <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A', marginBottom: 10 }}>README</Text>
-      <WebView
-        source={{ html }}
+      {header}
+      <WebViewComp
+        source={{ html: fullHtml }}
         style={{ width: width - 64, height: webViewHeight }}
         scrollEnabled={false}
         javaScriptEnabled={true}
         originWhitelist={['*']}
-        onMessage={(e) => {
+        onMessage={(e: any) => {
           try {
             const data = JSON.parse(e.nativeEvent.data);
             if (data.type === 'height' && data.height > 0) {
@@ -410,11 +415,10 @@ export default function DetailScreen() {
                                 // 检查是否已在下载队列或已完成
                                 const existing = findByUrl(asset.browser_download_url);
                                 if (existing && existing.status !== 'failed' && existing.status !== 'cancelled') {
-                                  // 进行中 / 已完成 / 已暂停 → 跳转下载页查看，不重复入队
                                   router.push('/downloads' as any);
                                   return;
                                 }
-                                // 加入 App 内下载队列（不跳浏览器）
+                                // 加入 App 内下载队列
                                 try {
                                   addDownloadRecord({
                                     app_id: app.id,
@@ -440,7 +444,6 @@ export default function DetailScreen() {
                                   });
                                   router.push('/downloads' as any);
                                 } catch (e: any) {
-                                  // 下载链接无效时不跳转，错误已在 enqueue 中抛出
                                   console.warn('[Detail] 下载失败:', e?.message);
                                 }
                               }}
@@ -512,7 +515,7 @@ export default function DetailScreen() {
         </View>
 
         {/* README Markdown 渲染 */}
-        {(displayReadme || readme) ? <MarkdownWebView content={displayReadme || readme} owner={owner ?? ''} repo={repo ?? ''} /> : null}
+        {(displayReadme || readme) ? <MarkdownSection content={displayReadme || readme} owner={owner ?? ''} repo={repo ?? ''} /> : null}
       </ScrollView>
     </SafeAreaView>
   );
