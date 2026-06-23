@@ -1,5 +1,5 @@
 /**
- * 下载管理器 v21
+ * 下载管理器 v22 — 全面质检修复版
  *
  * 引擎：
  *  - Android/iOS : expo-file-system createDownloadResumable（应用内下载，进度可追踪）
@@ -15,7 +15,13 @@
  * 重试策略：
  *  - 最多自动重试 5 次，指数退避（2s/4s/8s…30s）
  *  - 瞬态错误（断网/超时/RST_STREAM/Download interrupted）自动恢复
- *  - iOS：保留 resumeData，字节级续传；Android：暂停后重头下
+ *  - iOS：保留 resumeData，字节级续传；Android：重头下载
+ *
+ * v22 修复点：
+ *  1. downloadAsync() 返回 null（stall 取消）时未检查 status，覆盖 stall 的 pending → failed
+ *  2. stall 处理器未清理 speedSampler → 续传后速度计算异常
+ *  3. Android 上传入 resumeData 可能导致 downloadAsync 行为异常 → iOS 专用
+ *  4. stallTimer lastStallBytes 初始化为 0 → 首轮必过，掩盖即时卡顿 → 改为 task.bytesWritten
  */
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -23,11 +29,13 @@ import * as _FileSystem from 'expo-file-system/legacy';
 
 const IS_WEB = Platform.OS === 'web';
 const IS_ANDROID = Platform.OS === 'android';
+const IS_IOS = Platform.OS === 'ios';
 const MAX_CONCURRENT = 3;
 const PERM_DIR_NAME = 'dl_perm';
 const MAX_AUTO_RETRY = 5;
-const RESUME_KEY_PREFIX = '@openappstore/resume_'; // iOS 断点续传 key
-const SAF_PERM_KEY = '@openappstore/saf_downloads_uri'; // Android SAF 授权 URI
+const STALL_INTERVAL_MS = 60_000; // 无进度超时触发重试
+const RESUME_KEY_PREFIX = '@openappstore/resume_';
+const SAF_PERM_KEY = '@openappstore/saf_downloads_uri';
 
 function getFS(): typeof _FileSystem | null {
   return IS_WEB ? null : _FileSystem;
@@ -284,16 +292,21 @@ async function startTaskNative(id: string) {
 
   await fs.makeDirectoryAsync(tempDir, { intermediates: true }).catch(() => null);
 
-  // 加载断点续传数据（iOS 有效；Android 若服务端支持 Range 亦可恢复）
+  // 加载断点续传数据（仅 iOS 有字节级续传能力；Android 提供 resumeData 可能导致 downloadAsync 异常）
   let resumeData: string | undefined;
-  try {
-    const saved = await AsyncStorage.getItem(resumeKey);
-    if (saved) {
-      const info = await fs.getInfoAsync(localUri).catch(() => ({ exists: false }));
-      resumeData = info.exists ? saved : undefined;
-      if (!info.exists) await AsyncStorage.removeItem(resumeKey).catch(() => null);
-    }
-  } catch { /* ignore */ }
+  if (IS_IOS) {
+    try {
+      const saved = await AsyncStorage.getItem(resumeKey);
+      if (saved) {
+        const info = await fs.getInfoAsync(localUri).catch(() => ({ exists: false }));
+        resumeData = info.exists ? saved : undefined;
+        if (!info.exists) await AsyncStorage.removeItem(resumeKey).catch(() => null);
+      }
+    } catch { /* ignore */ }
+  } else {
+    // Android 不用 resumeData，清除可能残留的旧数据
+    await AsyncStorage.removeItem(resumeKey).catch(() => null);
+  }
 
   task.status = 'downloading';
   task.error = null;
@@ -325,19 +338,24 @@ async function startTaskNative(id: string) {
   let lastSaveTs = 0;
   activeSessions.set(id, resumable);
 
-  // 卡顿检测：60s 无新字节 → 取消并重试
-  let lastStallBytes = 0;
+  // 卡顿检测：STALL_INTERVAL_MS 无新字节 → 取消并重试
+  // lastStallBytes 初始化为当前已写字节数（而非 0），避免首轮必过、掩盖即时卡顿
+  let lastStallBytes = task.bytesWritten;
   const stallTimer = setInterval(() => {
     const t = tasks.get(id);
     if (!t || t.status !== 'downloading') { clearInterval(stallTimer); return; }
     if (t.bytesWritten === lastStallBytes) {
       clearInterval(stallTimer);
-      try {
-        const state = resumableRef?.savable();
-        if (state?.resumeData) AsyncStorage.setItem(resumeKey, JSON.stringify(state.resumeData)).catch(() => null);
-      } catch { /* ignore */ }
+      // iOS：保存断点以便下次续传
+      if (IS_IOS) {
+        try {
+          const state = resumableRef?.savable();
+          if (state?.resumeData) AsyncStorage.setItem(resumeKey, JSON.stringify(state.resumeData)).catch(() => null);
+        } catch { /* ignore */ }
+      }
       activeSessions.get(id)?.cancelAsync?.().catch(() => {});
       activeSessions.delete(id);
+      speedSampler.delete(id); // 清除速度采样，避免续传后速度计算异常
       if ((t._autoRetryCount ?? 0) < MAX_AUTO_RETRY) {
         t._autoRetryCount = (t._autoRetryCount ?? 0) + 1;
         t.status = 'pending';
@@ -354,7 +372,7 @@ async function startTaskNative(id: string) {
         flushQueue();
       }
     } else { lastStallBytes = t.bytesWritten; }
-  }, 60_000);
+  }, STALL_INTERVAL_MS);
 
   try {
     const result = await resumable.downloadAsync();
@@ -367,9 +385,11 @@ async function startTaskNative(id: string) {
     const t = tasks.get(id);
     if (!t) return;
     if (!result) {
-      if (t.status !== 'paused' && t.status !== 'cancelled') {
-        t.status = 'failed'; t.error = '下载中断，请重试'; notify(t);
-      }
+      // downloadAsync 返回 null = 被外部取消（stall/pause/cancel）
+      // stall 已将 status 置为 pending，直接放行让 flushQueue 重启
+      if (t.status !== 'downloading') { flushQueue(); return; }
+      // 意外的 null（未知原因中断）
+      t.status = 'failed'; t.error = '下载中断，请重试'; notify(t);
       flushQueue(); return;
     }
 
