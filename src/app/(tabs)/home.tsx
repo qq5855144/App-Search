@@ -91,7 +91,7 @@ function TodaySection() {
         contentContainerStyle={{ gap: 10, paddingRight: 4 }}>
         {loading
           ? [0,1,2,3,4].map((i) => (
-              <View key={i} style={{ width: 156, borderRadius: 18, padding: 14, backgroundColor: '#fff',
+              <View key={i} style={{ width: 156, borderRadius: 16, padding: 14, backgroundColor: '#fff',
                 boxShadow: [{ offsetX: 0, offsetY: 2, blurRadius: 10, color: 'rgba(0,0,0,0.06)' }] }}>
                 {/* 图标 + 名称行骨架 */}
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 }}>
@@ -118,7 +118,7 @@ function TodaySection() {
               <Pressable key={app.id}
                 onPress={() => router.push({ pathname: `/detail/${app.id}`,
                   params: { owner: app.owner, repo: app.repo } } as any)}
-                style={{ width: 156, backgroundColor: '#fff', borderRadius: 18, padding: 14,
+                style={{ width: 156, backgroundColor: '#fff', borderRadius: 16, padding: 14,
                   boxShadow: [{ offsetX: 0, offsetY: 2, blurRadius: 10, color: 'rgba(0,0,0,0.08)' }] }}>
                 {/* 图标 + 名称同行 */}
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 }}>
@@ -193,21 +193,23 @@ function PlatformsSection() {
         </View>
         <Text style={{ fontSize: 16, fontWeight: '700', color: '#1A1A1A' }}>按平台浏览</Text>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+      {/* 与 CategoryGrid 统一：图标圆形容器 + 文字，无独立卡片阴影 */}
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
         {PLATFORM_LIST.map((p) => (
           <Pressable key={p.key}
             onPress={() => router.push({
               pathname: '/(tabs)/discover',
               params: { platform: p.key },
             } as any)}
-            style={{ alignItems: 'center', backgroundColor: p.bg, borderRadius: 16,
-              paddingHorizontal: 18, paddingVertical: 14, gap: 6,
-              boxShadow: [{ offsetX: 0, offsetY: 2, blurRadius: 6, color: 'rgba(0,0,0,0.05)' }] }}>
-            <Ionicons name={p.icon as any} size={26} color={p.color} />
-            <Text style={{ fontSize: 12, fontWeight: '600', color: '#333' }}>{p.label}</Text>
+            style={{ alignItems: 'center', gap: 6, flex: 1, paddingVertical: 6 }}>
+            <View style={{ width: 52, height: 52, borderRadius: 15, backgroundColor: p.bg,
+              alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name={p.icon as any} size={26} color={p.color} />
+            </View>
+            <Text style={{ fontSize: 11, color: '#555', textAlign: 'center' }}>{p.label}</Text>
           </Pressable>
         ))}
-      </ScrollView>
+      </View>
     </View>
   );
 }
