@@ -22,7 +22,6 @@ export default function MarkdownSection({ content, owner, repo }: Props) {
   const baseUrl = `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/`;
 
   // html 与 source 都 memoize：任何一个引用变化都会触发 WebView 完整重载
-  // → 重载会重新执行 HEIGHT_SCRIPT → postMessage → setHeight → re-render → 无限循环
   const html = useMemo(
     () => buildReadmeHtml(content, baseUrl, webViewWidth),
     [content, baseUrl, webViewWidth]
@@ -32,12 +31,14 @@ export default function MarkdownSection({ content, owner, repo }: Props) {
     [html, owner, repo]
   );
 
-  // postMessage 高度上报：setHeight 只增不减，且 source memoize 后不触发重载
+  // postMessage 高度上报
   const onMessage = useCallback((e: WebViewMessageEvent) => {
     try {
       const data = JSON.parse(e.nativeEvent.data);
       if (data.type === 'height' && typeof data.height === 'number') {
-        setHeight(prev => Math.max(prev, data.height + 24));
+        // 允许高度更新，但限制最小高度
+        const newHeight = Math.max(MIN_HEIGHT, data.height + 24);
+        setHeight(newHeight);
       }
     } catch { /* 忽略非 JSON 消息 */ }
   }, []);

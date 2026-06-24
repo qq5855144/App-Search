@@ -90,10 +90,20 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
     var raw = decodeURIComponent(escape(atob('${b64}')));
 
     // 2. 解析相对 URL → 绝对 URL
-    raw = raw.replace(/(\\]\\()((?!https?:\\/\\/|mailto:|#)[^)]+)(\\))/g, function(m, a, p, c) {
+    // 处理 [text](path)
+    raw = raw.replace(/(\]\[)((?!https?:\/\/|mailto:|#|ftp:|\/)[^)]+)(\))/g, function(m, a, p, c) {
       return a + '${safeBase}' + p + c;
     });
-    raw = raw.replace(/(!\\[[^\\]]*\\]\\()((?!https?:\\/\\/)[^)]+)(\\))/g, function(m, a, p, c) {
+    // 处理 ![alt](path)
+    raw = raw.replace(/(!\[[^\]]*\]\()((?!https?:\/\/|data:)[^)]+)(\))/g, function(m, a, p, c) {
+      return a + '${safeBase}' + p + c;
+    });
+    // 处理 <img src="path">
+    raw = raw.replace(/(<img[^>]+src=")((?!https?:\/\/|data:)[^"]+)(")/gi, function(m, a, p, c) {
+      return a + '${safeBase}' + p + c;
+    });
+    // 处理 <a href="path">
+    raw = raw.replace(/(<a[^>]+href=")((?!https?:\/\/|mailto:|#|ftp:|\/)[^"]+)(")/gi, function(m, a, p, c) {
       return a + '${safeBase}' + p + c;
     });
 
@@ -134,10 +144,14 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
     html = html.replace(/<li>\\[ \\]/g, '<li class="task-list-item"><input type="checkbox" disabled> ');
     html = html.replace(/<li>\\[x\\]/gi, '<li class="task-list-item"><input type="checkbox" disabled checked> ');
 
-    // 6. shields.io 徽章强制 PNG 格式（React Native 无法渲染 SVG img）
-    html = html.replace(/(<img[^>]+src=")([^"]*shields\\.io[^"]*|[^"]*badge\\.svg[^"]*|[^"]*badgen\\.net[^"]*)(")/gi, function(m, a, src, c) {
+    // 6. 徽章优化：shields.io 强制 PNG 格式（React Native 无法渲染 SVG img）
+    html = html.replace(/(<img[^>]+src=")([^"]*shields\.io[^"]*|[^"]*badge\.svg[^"]*|[^"]*badgen\.net[^"]*)(")/gi, function(m, a, src, c) {
+      if (src.includes('format=png')) return m;
       return a + (src.includes('?') ? src + '&format=png' : src + '?format=png') + c;
     });
+
+    // 7. 外部链接：在新窗口打开
+    html = html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ');
 
     document.getElementById('md').innerHTML = html;
 
@@ -169,11 +183,18 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"><\/script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"><\/script>
-<style>${README_CSS}<\/style>
+<style>
+  ${README_CSS}
+  /* 修复高度上报延迟问题 */
+  body { min-height: 100vh; }
+</style>
 </head>
 <body>
 <div id="md"></div>
-<script>${js}<\/script>
+<script>
+  ${js}
+  ${HEIGHT_SCRIPT}
+</script>
 </body>
 </html>`;
 }
