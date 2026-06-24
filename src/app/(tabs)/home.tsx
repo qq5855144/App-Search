@@ -70,9 +70,9 @@ function TodaySection() {
   };
 
   return (
-    <View style={{ marginHorizontal: 12, marginBottom: 20 }}>
+    <View style={{ marginBottom: 20 }}>
       {/* 标题行 */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+      <View style={{ marginHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <View style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: '#FFF3E0',
             alignItems: 'center', justifyContent: 'center' }}>
@@ -86,12 +86,12 @@ function TodaySection() {
         </Pressable>
       </View>
 
-      {/* 卡片横向滑动 —— loading 时渲染同尺寸骨架卡，避免高度跳变 */}
+      {/* 卡片横向滑动 —— paddingHorizontal让ScrollView撑满屏宽，paddingVertical给阴影留空间 */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ gap: 10, paddingRight: 4 }}>
+        contentContainerStyle={{ gap: 10, paddingHorizontal: 12, paddingVertical: 6 }}>
         {loading
           ? [0,1,2,3,4].map((i) => (
-              <View key={i} style={{ width: 156, borderRadius: 16, padding: 14, backgroundColor: '#fff',
+              <View key={i} style={{ width: 160, borderRadius: 16, padding: 14, backgroundColor: '#fff',
                 boxShadow: [{ offsetX: 0, offsetY: 2, blurRadius: 10, color: 'rgba(0,0,0,0.06)' }] }}>
                 {/* 图标 + 名称行骨架 */}
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 }}>
@@ -118,12 +118,12 @@ function TodaySection() {
               <Pressable key={app.id}
                 onPress={() => router.push({ pathname: `/detail/${app.id}`,
                   params: { owner: app.owner, repo: app.repo } } as any)}
-                style={{ width: 156, backgroundColor: '#fff', borderRadius: 16, padding: 14,
+                style={{ width: 160, backgroundColor: '#fff', borderRadius: 16, padding: 14,
                   boxShadow: [{ offsetX: 0, offsetY: 2, blurRadius: 10, color: 'rgba(0,0,0,0.08)' }] }}>
-                {/* 图标 + 名称同行 */}
+                {/* 图标 + 名称同行，flexShrink确保名称不撑破容器 */}
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                   <AppIcon owner={app.owner} url={app.avatar_url} name={app.name} size={40} priority="high" />
-                  <Text style={{ flex: 1, fontSize: 13, fontWeight: '700', color: '#1A1A1A' }}
+                  <Text style={{ flex: 1, flexShrink: 1, fontSize: 13, fontWeight: '700', color: '#1A1A1A' }}
                     numberOfLines={2}>{app.name}</Text>
                 </View>
                 {/* 描述 */}
@@ -137,11 +137,11 @@ function TodaySection() {
                 {/* Stars + 语言 */}
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 }}>
                   <Ionicons name="star" size={11} color="#FFAA00" />
-                  <Text style={{ fontSize: 11, color: '#AAA', flex: 1 }}>
+                  <Text style={{ fontSize: 11, color: '#AAA', flex: 1, flexShrink: 1 }}>
                     {app.stars >= 1000 ? `${(app.stars / 1000).toFixed(1)}k` : String(app.stars)}
                   </Text>
                   {app.language ? (
-                    <Text style={{ fontSize: 10, color: '#BBB' }}>{app.language}</Text>
+                    <Text style={{ fontSize: 10, color: '#BBB' }} numberOfLines={1}>{app.language}</Text>
                   ) : null}
                 </View>
               </Pressable>
