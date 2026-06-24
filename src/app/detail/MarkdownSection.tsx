@@ -31,14 +31,13 @@ export default function MarkdownSection({ content, owner, repo }: Props) {
     [html, owner, repo]
   );
 
-  // postMessage 高度上报
+  // postMessage 高度上报 —— 只增不减策略：避免图片未加载时的小值覆盖最终正确高度
   const onMessage = useCallback((e: WebViewMessageEvent) => {
     try {
       const data = JSON.parse(e.nativeEvent.data);
       if (data.type === 'height' && typeof data.height === 'number') {
-        // 允许高度更新，但限制最小高度
-        const newHeight = Math.max(MIN_HEIGHT, data.height + 24);
-        setHeight(newHeight);
+        const reported = Math.max(MIN_HEIGHT, Math.ceil(data.height) + 24);
+        setHeight((prev) => (reported > prev ? reported : prev));
       }
     } catch { /* 忽略非 JSON 消息 */ }
   }, []);

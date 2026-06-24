@@ -57,19 +57,52 @@ export const README_CSS = `
   .hljs { background: transparent !important; }
 `;
 
-// 高度上报脚本：分两阶段上报，确保图片等异步资源加载后高度也被捕获
-// 与 React Native onMessage 配合；source memoize 后不会触发重载循环
+// 高度上报脚本（稳健版）
+// 策略：取多个指标最大值 + ResizeObserver + 图片 onload + 多延迟点，配合 Native 侧"只增不减"
 const HEIGHT_SCRIPT = `
+  function getMaxHeight() {
+    var el = document.getElementById('md');
+    var candidates = [
+      document.documentElement.scrollHeight,
+      document.documentElement.offsetHeight,
+      document.body.scrollHeight,
+      document.body.offsetHeight,
+    ];
+    if (el) {
+      var rect = el.getBoundingClientRect();
+      candidates.push(Math.ceil(rect.bottom + (window.scrollY || 0)));
+      candidates.push(el.scrollHeight);
+      candidates.push(el.offsetHeight);
+    }
+    return Math.max.apply(null, candidates.filter(function(v) { return v > 0; }));
+  }
   function reportHeight() {
-    var h = document.documentElement.scrollHeight || document.body.scrollHeight;
+    var h = getMaxHeight();
+    if (h <= 0) return;
     var msg = JSON.stringify({ type: 'height', height: h });
     if (window.ReactNativeWebView) { window.ReactNativeWebView.postMessage(msg); }
     else if (window.parent && window.parent !== window) { window.parent.postMessage(msg, '*'); }
   }
-  // 阶段一：DOM 渲染完成后上报（文字、表格等布局已确定）
-  setTimeout(reportHeight, 80);
-  // 阶段二：所有资源（图片等）加载完成后再上报，捕获图片撑开的高度
-  window.addEventListener('load', function() { setTimeout(reportHeight, 300); });
+  // 多延迟点上报：覆盖不同渲染阶段（DOM、字体、图片）
+  [50, 150, 400, 800, 1500, 3000].forEach(function(ms) {
+    setTimeout(reportHeight, ms);
+  });
+  // window.load：所有子资源加载完毕后再上报一次
+  window.addEventListener('load', function() { setTimeout(reportHeight, 200); });
+  // ResizeObserver：内容尺寸变化时（图片懒加载、折叠展开等）实时上报
+  if (typeof ResizeObserver !== 'undefined') {
+    var ro = new ResizeObserver(function() { setTimeout(reportHeight, 60); });
+    var el = document.getElementById('md');
+    if (el) ro.observe(el);
+    ro.observe(document.body);
+  }
+  // 图片 onload：单张图片加载后上报，避免等全部 load 太慢
+  document.querySelectorAll('#md img').forEach(function(img) {
+    if (!img.complete) {
+      img.addEventListener('load',  function() { setTimeout(reportHeight, 60); });
+      img.addEventListener('error', function() { setTimeout(reportHeight, 60); });
+    }
+  });
 `;
 
 /**
@@ -185,8 +218,7 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"><\/script>
 <style>
   ${README_CSS}
-  /* 修复高度上报延迟问题 */
-  body { min-height: 100vh; }
+  /* 移除 min-height:100vh，避免初始 scrollHeight 包含视口高度导致高度计算偏大 */
 </style>
 </head>
 <body>

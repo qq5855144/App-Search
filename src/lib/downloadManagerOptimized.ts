@@ -238,7 +238,7 @@ async function getFileSize(url: string): Promise<number> {
       const contentLength = response.headers.get('content-length');
       return contentLength ? parseInt(contentLength, 10) : 0;
     } else if (IS_ANDROID) {
-      const response = await ReactNativeBlobUtil.fetch('HEAD', url, {
+      const response = await ReactNativeBlobUtil.fetch('HEAD' as any, url, {
         'User-Agent': 'OpenAppStore/2.0',
       });
       const contentLength = response.info().headers['content-length'];
@@ -263,7 +263,7 @@ async function supportsRangeRequests(url: string): Promise<boolean> {
       const response = await fetch(url, { method: 'HEAD' });
       return response.headers.get('accept-ranges') === 'bytes';
     } else if (IS_ANDROID) {
-      const response = await ReactNativeBlobUtil.fetch('HEAD', url, {
+      const response = await ReactNativeBlobUtil.fetch('HEAD' as any, url, {
         'User-Agent': 'OpenAppStore/2.0',
       });
       const headers = response.info().headers;
@@ -1064,7 +1064,7 @@ async function mergeChunksAndDownloadWeb(task: DownloadTask): Promise<void> {
     }
 
     // 合并分片
-    const merged = new Blob(chunks);
+    const merged = new Blob(chunks as BlobPart[]);
 
     // 创建下载链接
     const url = URL.createObjectURL(merged);
