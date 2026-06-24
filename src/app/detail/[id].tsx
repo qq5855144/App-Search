@@ -4,7 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useAndroidGoBack } from '@/hooks/useAndroidGoBack';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { fetchRepoDetail, fetchReleases, fetchReadme, getPlatformFromFilename, filterInstallAssets, filterVerificationAssets, checkIfStarred, starRepo, unstarRepo } from '@/lib/github';
+import { fetchRepoDetail, fetchReleases, fetchLatestRelease, fetchReadme, getPlatformFromFilename, filterInstallAssets, filterVerificationAssets, checkIfStarred, starRepo, unstarRepo } from '@/lib/github';
 import { addFavorite, removeFavorite, isFavorite, addDownloadRecord } from '@/lib/database';
 import { addAppEvent } from '@/lib/events';
 import type { AppItem, GitHubRelease } from '@/types';
@@ -58,9 +58,10 @@ export default function DetailScreen() {
       try {
         setLoading(true);
         setError('');
-        const [detail, rels, md] = await Promise.all([
+        const [detail, rels, latestRel, md] = await Promise.all([
           fetchRepoDetail(owner, repo),
           fetchReleases(owner, repo, 1, true).catch(() => [] as GitHubRelease[]),
+          fetchLatestRelease(owner, repo).catch(() => null),
           fetchReadme(owner, repo).catch(() => ''),
         ]);
         if (cancelled) return;
@@ -72,8 +73,9 @@ export default function DetailScreen() {
           assets: filterInstallAssets(r.assets),
           verification_assets: filterVerificationAssets(r.assets),
         })).filter((r) => r.assets.length > 0);
-        // 保留未过滤的首条 release 用于项目信息区（真实最新版本，含无安装包的版本）
-        setLatestRawRelease(rels[0] ?? null);
+        // 项目信息区版本：优先用专用 /releases/latest 端点（独立缓存，限速也能显示）
+        // 再降级到 fetchReleases 的第一条，最后降级到 catalog 缓存值
+        setLatestRawRelease(latestRel ?? rels[0] ?? null);
         setReleases(installRels);
         if (installRels.length > 0) setExpandedRelease(installRels[0].id);
         setReadme(md);

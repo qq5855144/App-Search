@@ -500,6 +500,46 @@ export async function fetchReleases(owner: string, repo: string, page = 1, bypas
   return result
 }
 
+// ─── 最新 Release（独立缓存，2h TTL）───────────────────────────────────────────
+/**
+ * 获取仓库的最新 Release（调用 /releases/latest，独立缓存）
+ * 只消耗 1 次 API 请求，比 fetchReleases 更高效，专用于项目信息区版本显示
+ */
+export async function fetchLatestRelease(owner: string, repo: string): Promise<GitHubRelease | null> {
+  const cacheKey = `latest_release:${owner}/${repo}`
+  const cached = await getCache<GitHubRelease>(cacheKey)
+  if (cached) return cached
+
+  try {
+    const headers: Record<string, string> = {
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    }
+    if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
+    const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/releases/latest`, { headers })
+    if (!res.ok) return null          // 404=无 release，403=限速 → 静默返回 null
+    const r = await res.json()
+    const release: GitHubRelease = {
+      id: r.id,
+      tag_name: r.tag_name,
+      name: r.name || r.tag_name,
+      body: r.body,
+      published_at: r.published_at,
+      html_url: r.html_url,
+      assets: (r.assets || []).map((a: any) => ({
+        name: a.name,
+        size: a.size,
+        download_count: a.download_count || 0,
+        browser_download_url: a.browser_download_url,
+      })),
+    }
+    await setCache(cacheKey, release, 2 * HOUR)
+    return release
+  } catch {
+    return null
+  }
+}
+
 // ─── 版本号工具 ─────────────────────────────────────────────────────────────────
 
 /** 规范化版本号：去掉前缀 v/V，统一为 semver 格式 */
