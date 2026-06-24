@@ -34,7 +34,7 @@ export const README_CSS = `
   th { background: #f6f8fa; font-weight: 600; }
   tr:nth-child(even) td { background: #f8f9fa; }
   blockquote {
-    border-left: 4px solid #d8dee4; margin: 0 0 14px;
+    margin: 0 0 14px;
     padding: 2px 14px; color: #656d76;
   }
   ul, ol { padding-left: 2em; margin: 0 0 12px; }
