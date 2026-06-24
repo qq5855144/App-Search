@@ -60,7 +60,7 @@ export default function DetailScreen() {
         setError('');
         const [detail, rels, latestRel, md] = await Promise.all([
           fetchRepoDetail(owner, repo),
-          fetchReleases(owner, repo, 1, true).catch(() => [] as GitHubRelease[]),
+          fetchReleases(owner, repo, 1, false).catch(() => [] as GitHubRelease[]),
           fetchLatestRelease(owner, repo).catch(() => null),
           fetchReadme(owner, repo).catch(() => ''),
         ]);
