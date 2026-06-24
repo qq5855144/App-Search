@@ -1,5 +1,6 @@
 // ─── README 渲染公共工具：CSS、HTML 生成器 ──────────────────────────────────────
-// 使用 marked.js (GFM) + highlight.js（CDN）在 WebView 中渲染，效果与 GitHub 一致
+// marked.js + highlight.js 完全内联，零 CDN 依赖，Android/iOS/Web 三端一致渲染
+import { MARKED_INLINE, HLJS_INLINE, HLJS_GITHUB_CSS } from './_readmeBundles';
 
 export const README_CSS = `
   * { box-sizing: border-box; }
@@ -57,8 +58,6 @@ export const README_CSS = `
   .hljs { background: transparent !important; }
 `;
 
-// 高度上报脚本：分两阶段上报，确保图片等异步资源加载后高度也被捕获
-// 与 React Native onMessage 配合；source memoize 后不会触发重载循环
 const HEIGHT_SCRIPT = `
   function reportHeight() {
     var h = document.documentElement.scrollHeight || document.body.scrollHeight;
@@ -180,19 +179,20 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
     });
   `;
 
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=${viewportWidth},initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"><\/script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"><\/script>
-<style>${README_CSS}<\/style>
-</head>
-<body>
-<div id="md"></div>
-<script>${js}<\/script>
-</body>
-</html>`;
+  return (
+    '<!DOCTYPE html>\n' +
+    '<html lang="zh-CN">\n' +
+    '<head>\n' +
+    '<meta charset="UTF-8">\n' +
+    `<meta name="viewport" content="width=${viewportWidth},initial-scale=1.0,maximum-scale=1.0,user-scalable=no">\n` +
+    '<style>\n' + HLJS_GITHUB_CSS + '\n' + README_CSS + '\n</style>\n' +
+    '<script>\n' + MARKED_INLINE + '\n</script>\n' +
+    '<script>\n' + HLJS_INLINE + '\n</script>\n' +
+    '</head>\n' +
+    '<body>\n' +
+    '<div id="md"></div>\n' +
+    '<script>\n' + HEIGHT_SCRIPT + '\n' + js + '\n</script>\n' +
+    '</body>\n' +
+    '</html>'
+  );
 }
