@@ -1,4 +1,4 @@
-// ─── README 渲染 — WebView + 内联 marked/hljs（零 CDN，GitHub 风格还原）────────
+// ─── README 渲染 — WebView 方案（marked.js GFM + highlight.js 代码高亮）────────
 import React, { useState, useCallback, useMemo } from 'react';
 import { View, Text, Platform, ActivityIndicator, useWindowDimensions } from 'react-native';
 import WebView, { type WebViewMessageEvent } from 'react-native-webview';
@@ -18,8 +18,11 @@ export default function MarkdownSection({ content, owner, repo }: Props) {
   const { width: windowWidth } = useWindowDimensions();
   // 屏幕 padding 12*2 + 卡片内 padding 16*2 = 56
   const webViewWidth = windowWidth - 56;
+
   const baseUrl = `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/`;
 
+  // html 与 source 都 memoize：任何一个引用变化都会触发 WebView 完整重载
+  // → 重载会重新执行 HEIGHT_SCRIPT → postMessage → setHeight → re-render → 无限循环
   const html = useMemo(
     () => buildReadmeHtml(content, baseUrl, webViewWidth),
     [content, baseUrl, webViewWidth]
@@ -29,13 +32,12 @@ export default function MarkdownSection({ content, owner, repo }: Props) {
     [html, owner, repo]
   );
 
-  // 只增不减：避免图片加载前的小值覆盖最终正确高度
+  // postMessage 高度上报：setHeight 只增不减，且 source memoize 后不触发重载
   const onMessage = useCallback((e: WebViewMessageEvent) => {
     try {
       const data = JSON.parse(e.nativeEvent.data);
       if (data.type === 'height' && typeof data.height === 'number') {
-        const reported = Math.max(MIN_HEIGHT, Math.ceil(data.height) + 24);
-        setHeight((prev) => (reported > prev ? reported : prev));
+        setHeight(prev => Math.max(prev, data.height + 24));
       }
     } catch { /* 忽略非 JSON 消息 */ }
   }, []);
@@ -51,13 +53,14 @@ export default function MarkdownSection({ content, owner, repo }: Props) {
         <iframe
           srcDoc={html}
           style={{ width: '100%', minHeight: 500, border: 'none', display: 'block' }}
-          sandbox="allow-scripts"
+          sandbox="allow-scripts allow-same-origin"
         />
       </View>
     );
   }
 
   // ── Native 平台：WebView ──────────────────────────────────────────────────
+  // opacity 放在 wrapper View 而非 WebView style，避免 setLoaded 触发 WebView 样式更新/重排
   return (
     <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4, width: '100%' }}>
       <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A', marginBottom: 10 }}>README</Text>
