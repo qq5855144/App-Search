@@ -1,8 +1,7 @@
 // ─── README 渲染公共工具：CSS、HTML 生成器 ──────────────────────────────────────
-// marked.js (UMD) + highlight.js core + 12 种语言 全部内联，零 CDN 依赖
-// 解决 Android WebView 在弱网/受限网络下 CDN 加载失败导致 README 空白的问题
+// marked.js (UMD) + highlight.js (CJS→IIFE) 全部内联，零 CDN 依赖
+// 修复：highlight.js CJS 格式在浏览器 <script> 中需 IIFE 包装
 
-// ── marked.js UMD（内联，无需网络）─────────────────────────────────────────────
 const MARKED_INLINE = `/**
  * marked v18.0.5 - a markdown parser
  * Copyright (c) 2018-2026, MarkedJS. (MIT License)
@@ -84,8 +83,7 @@ if(__exports != exports)module.exports = exports;return module.exports}));
 //# sourceMappingURL=marked.umd.js.map
 `;
 
-// ── highlight.js core（内联）────────────────────────────────────────────────────
-const HLJS_CORE_INLINE = `/* eslint-disable no-multi-assign */
+const HLJS_INLINE = `var hljs = (function(){var module={exports:{}};var exports=module.exports;/* eslint-disable no-multi-assign */
 
 function deepFreeze(obj) {
   if (obj instanceof Map) {
@@ -2682,12 +2680,9 @@ highlight.newInstance = () => HLJS({});
 module.exports = highlight;
 highlight.HighlightJS = highlight;
 highlight.default = highlight;
-var hljs={highlight,highlightAuto,highlightAll,highlightElement,highlightBlock,configure,initHighlighting,initHighlightingOnLoad,registerLanguage,unregisterLanguage,listLanguages,getLanguage,registerAliases,autoDetection,inherit,addPlugin,removePlugin};
-if(typeof window!=='undefined')window.hljs=hljs;
-`;
 
-// ── 常用语言包（内联）──────────────────────────────────────────────────────────
-const HLJS_LANGS_INLINE = `const IDENT_RE = '[A-Za-z$_][0-9A-Za-z$_]*';
+return module.exports;})();
+hljs.registerLanguage('javascript',(function(){var module={exports:{}};var exports=module.exports;const IDENT_RE = '[A-Za-z$_][0-9A-Za-z$_]*';
 const KEYWORDS = [
   "as", // for exports
   "in",
@@ -3457,7 +3452,8 @@ function javascript(hljs) {
 
 module.exports = javascript;
 
-const IDENT_RE = '[A-Za-z$_][0-9A-Za-z$_]*';
+return module.exports;})());
+hljs.registerLanguage('typescript',(function(){var module={exports:{}};var exports=module.exports;const IDENT_RE = '[A-Za-z$_][0-9A-Za-z$_]*';
 const KEYWORDS = [
   "as", // for exports
   "in",
@@ -4371,7 +4367,8 @@ function typescript(hljs) {
 
 module.exports = typescript;
 
-/*
+return module.exports;})());
+hljs.registerLanguage('python',(function(){var module={exports:{}};var exports=module.exports;/*
 Language: Python
 Description: Python is an interpreted, object-oriented, high-level programming language with dynamic semantics.
 Website: https://www.python.org
@@ -4808,7 +4805,8 @@ function python(hljs) {
 
 module.exports = python;
 
-// https://docs.oracle.com/javase/specs/jls/se15/html/jls-3.html#jls-3.10
+return module.exports;})());
+hljs.registerLanguage('java',(function(){var module={exports:{}};var exports=module.exports;// https://docs.oracle.com/javase/specs/jls/se15/html/jls-3.html#jls-3.10
 var decimalDigits = '[0-9](_*[0-9])*';
 var frac = \`\\\\.(\${decimalDigits})\`;
 var hexDigits = '[0-9a-fA-F](_*[0-9a-fA-F])*';
@@ -5100,7 +5098,8 @@ function java(hljs) {
 
 module.exports = java;
 
-/*
+return module.exports;})());
+hljs.registerLanguage('bash',(function(){var module={exports:{}};var exports=module.exports;/*
 Language: Bash
 Author: vah <vahtenberg@gmail.com>
 Contributrors: Benjamin Pannell <contact@sierrasoftworks.com>
@@ -5510,7 +5509,8 @@ function bash(hljs) {
 
 module.exports = bash;
 
-/*
+return module.exports;})());
+hljs.registerLanguage('cpp',(function(){var module={exports:{}};var exports=module.exports;/*
 Language: C++
 Category: common, system
 Website: https://isocpp.org
@@ -6116,7 +6116,8 @@ function cpp(hljs) {
 
 module.exports = cpp;
 
-/*
+return module.exports;})());
+hljs.registerLanguage('go',(function(){var module={exports:{}};var exports=module.exports;/*
 Language: Go
 Author: Stephan Kountso aka StepLg <steplg@gmail.com>
 Contributors: Evgeny Stepanischev <imbolk@gmail.com>
@@ -6273,7 +6274,8 @@ function go(hljs) {
 
 module.exports = go;
 
-/*
+return module.exports;})());
+hljs.registerLanguage('json',(function(){var module={exports:{}};var exports=module.exports;/*
 Language: JSON
 Description: JSON (JavaScript Object Notation) is a lightweight data-interchange format.
 Author: Ivan Sagalaev <maniac@softwaremaniacs.org>
@@ -6328,7 +6330,8 @@ function json(hljs) {
 
 module.exports = json;
 
-/*
+return module.exports;})());
+hljs.registerLanguage('xml',(function(){var module={exports:{}};var exports=module.exports;/*
 Language: HTML, XML
 Website: https://www.w3.org/XML/
 Category: common, web
@@ -6570,7 +6573,8 @@ function xml(hljs) {
 
 module.exports = xml;
 
-/*
+return module.exports;})());
+hljs.registerLanguage('rust',(function(){var module={exports:{}};var exports=module.exports;/*
 Language: Rust
 Author: Andrey Vlasovskikh <andrey.vlasovskikh@gmail.com>
 Contributors: Roman Shmatov <romanshmatov@gmail.com>, Kasper Andersen <kma_untrusted@protonmail.com>
@@ -6897,7 +6901,8 @@ function rust(hljs) {
 
 module.exports = rust;
 
-/*
+return module.exports;})());
+hljs.registerLanguage('yaml',(function(){var module={exports:{}};var exports=module.exports;/*
 Language: YAML
 Description: Yet Another Markdown Language
 Author: Stefan Wienert <stwienert@gmail.com>
@@ -7111,7 +7116,8 @@ function yaml(hljs) {
 
 module.exports = yaml;
 
-/*
+return module.exports;})());
+hljs.registerLanguage('markdown',(function(){var module={exports:{}};var exports=module.exports;/*
 Language: Markdown
 Requires: xml.js
 Author: John Crepezzi <john.crepezzi@gmail.com>
@@ -7359,9 +7365,9 @@ function markdown(hljs) {
 }
 
 module.exports = markdown;
-`;
 
-// ── highlight.js GitHub 主题 CSS（内联，替代 CDN link）─────────────────────────
+return module.exports;})());`;
+
 const HLJS_CSS_INLINE = `.hljs{color:#24292e;background:#f6f8fa}
 .hljs-doctag,.hljs-keyword,.hljs-meta .hljs-keyword,.hljs-template-tag,.hljs-template-variable,.hljs-type,.hljs-variable.language_{color:#d73a49}
 .hljs-title,.hljs-title.class_,.hljs-title.class_.inherited__,.hljs-title.function_{color:#6f42c1}
@@ -7370,10 +7376,8 @@ const HLJS_CSS_INLINE = `.hljs{color:#24292e;background:#f6f8fa}
 .hljs-built_in,.hljs-symbol{color:#e36209}
 .hljs-code,.hljs-comment,.hljs-formula{color:#6a737d}
 .hljs-name,.hljs-quote,.hljs-selector-pseudo,.hljs-selector-tag{color:#22863a}
-.hljs-subst{color:#24292e}
-.hljs-section{color:#005cc5;font-weight:700}
-.hljs-bullet{color:#735c0f}
-.hljs-emphasis{color:#24292e;font-style:italic}
+.hljs-subst{color:#24292e}.hljs-section{color:#005cc5;font-weight:700}
+.hljs-bullet{color:#735c0f}.hljs-emphasis{color:#24292e;font-style:italic}
 .hljs-strong{color:#24292e;font-weight:700}
 .hljs-addition{color:#22863a;background:#f0fff4}
 .hljs-deletion{color:#b31d28;background:#ffeef0}`;
@@ -7448,10 +7452,7 @@ const HEIGHT_SCRIPT = `
 `;
 
 /**
- * 构建用于 WebView 的完整 HTML 文档（零外部依赖，marked + hljs 全部内联）
- * @param markdown      原始 Markdown 文本
- * @param baseUrl       相对路径前缀（raw.githubusercontent.com）
- * @param viewportWidth WebView 实际像素宽度，用于精确 viewport 避免缩放
+ * 构建用于 WebView 的完整 HTML 文档（零外部依赖）
  */
 export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth: number): string {
   const b64 = btoa(unescape(encodeURIComponent(markdown)));
@@ -7544,8 +7545,7 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
 <div id="md"></div>
 <script>
 ${MARKED_INLINE}
-${HLJS_CORE_INLINE}
-${HLJS_LANGS_INLINE}
+${HLJS_INLINE}
 ${HEIGHT_SCRIPT}
 ${js}
 <\/script>
