@@ -1,9 +1,9 @@
-// ─── README 渲染 — react-native-marked useMarkdown 钩子（纯 JS，全平台）────
-// 关键：使用 useMarkdown 钩子直接获取 ReactNode[]，渲染在普通 View 中，
-// 避免 FlatList 嵌套 ScrollView 导致的虚拟化冲突、加载不完整和滚动卡死。
-import React from 'react';
-import { View, Text } from 'react-native';
-import { useMarkdown, type MarkedStyles } from 'react-native-marked';
+// ─── README 渲染 — WebView 方案（marked.js GFM + highlight.js 代码高亮）────────
+// 效果与 GitHub 完全一致：标题、代码块语法高亮、表格、任务列表、Admonitions、徽章
+import React, { useState, useCallback } from 'react';
+import { View, Text, Platform, ActivityIndicator } from 'react-native';
+import WebView, { type WebViewMessageEvent } from 'react-native-webview';
+import { buildReadmeHtml } from './_readmeUtils';
 
 interface Props {
   content: string;
@@ -11,43 +11,77 @@ interface Props {
   repo: string;
 }
 
-const styles: MarkedStyles = {
-  h1: { fontSize: 24, fontWeight: '700', borderBottomWidth: 1, borderBottomColor: '#d8dee4', paddingBottom: 7, marginBottom: 12, marginTop: 20, color: '#1F2328' },
-  h2: { fontSize: 20, fontWeight: '600', borderBottomWidth: 1, borderBottomColor: '#d8dee4', paddingBottom: 6, marginBottom: 10, marginTop: 20, color: '#1F2328' },
-  h3: { fontSize: 17, fontWeight: '600', marginBottom: 8, marginTop: 16, color: '#1F2328' },
-  h4: { fontSize: 15, fontWeight: '600', marginBottom: 6, marginTop: 14, color: '#1F2328' },
-  h5: { fontSize: 14, fontWeight: '600', marginBottom: 4, marginTop: 12, color: '#1F2328' },
-  h6: { fontSize: 13, fontWeight: '600', color: '#656d76', marginBottom: 4, marginTop: 10 },
-  text: { fontSize: 14, lineHeight: 22, color: '#1F2328' },
-  link: { color: '#0969da' },
-  blockquote: { borderLeftWidth: 3, borderLeftColor: '#d8dee4', paddingLeft: 12, marginBottom: 12 },
-  code: { backgroundColor: '#f6f8fa', borderRadius: 6, padding: 12, marginBottom: 10 },
-  codespan: { backgroundColor: 'rgba(175,184,193,0.2)', borderRadius: 3, paddingHorizontal: 4, paddingVertical: 2, fontFamily: 'monospace', fontSize: 12, color: '#1F2328' },
-  hr: { borderTopWidth: 1, borderTopColor: '#d8dee4', marginVertical: 20 },
-  image: { resizeMode: 'contain' },
-  table: { borderWidth: 1, borderColor: '#d8dee4', borderRadius: 6, marginBottom: 10 },
-  tableCell: { borderWidth: 0.5, borderColor: '#d8dee4', padding: 8 },
-  tableRow: { borderBottomWidth: 0.5, borderBottomColor: '#d8dee4' },
-  li: { fontSize: 14, lineHeight: 22, color: '#1F2328', marginBottom: 2 },
-  paragraph: { marginBottom: 10 },
-  em: { fontStyle: 'italic' },
-  strong: { fontWeight: '700' },
-  strikethrough: { textDecorationLine: 'line-through', color: '#656d76' },
-};
+const MIN_HEIGHT = 120;
 
 export default function MarkdownSection({ content, owner, repo }: Props) {
-  const cleaned = (content || '').replace(/^---[\s\S]*?---\r?\n?/, '').trim();
+  const [height, setHeight] = useState(MIN_HEIGHT);
+  const [loaded, setLoaded] = useState(false);
+
   const baseUrl = `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/`;
 
-  // useMarkdown 必须在顶层调用（React Hook 规则）
-  const elements = useMarkdown(cleaned, { baseUrl, styles });
+  const onMessage = useCallback((e: WebViewMessageEvent) => {
+    try {
+      const data = JSON.parse(e.nativeEvent.data);
+      if (data.type === 'height' && typeof data.height === 'number' && data.height > MIN_HEIGHT) {
+        setHeight(data.height + 24); // padding buffer
+      }
+    } catch { /* 忽略非 JSON 消息 */ }
+  }, []);
 
-  if (!content || !cleaned) return null;
+  if (!content) return null;
 
+  const html = buildReadmeHtml(content, baseUrl);
+
+  // ── Web 平台：iframe ──────────────────────────────────────────────────────
+  if (Platform.OS === 'web') {
+    return (
+      <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4 }}>
+        <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A', marginBottom: 10 }}>README</Text>
+        {/* @ts-ignore web only */}
+        <iframe
+          srcDoc={html}
+          style={{ width: '100%', minHeight: 500, border: 'none', display: 'block' }}
+          sandbox="allow-scripts allow-same-origin"
+          onLoad={(e: any) => {
+            // 监听 postMessage 上报的高度
+            const handler = (ev: MessageEvent) => {
+              try {
+                const d = typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data;
+                if (d?.type === 'height' && d.height > 0) {
+                  e.target.style.height = (d.height + 24) + 'px';
+                  window.removeEventListener('message', handler);
+                }
+              } catch { /* ignore */ }
+            };
+            window.addEventListener('message', handler);
+          }}
+        />
+      </View>
+    );
+  }
+
+  // ── Native 平台：WebView ──────────────────────────────────────────────────
   return (
     <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4 }}>
       <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A', marginBottom: 10 }}>README</Text>
-      {elements}
+      {!loaded && (
+        <ActivityIndicator size="small" color="#0969da" style={{ marginVertical: 20 }} />
+      )}
+      <WebView
+        source={{ html, baseUrl: `https://github.com/${owner}/${repo}` }}
+        style={{ height, opacity: loaded ? 1 : 0 }}
+        scrollEnabled={false}
+        showsVerticalScrollIndicator={false}
+        showsHorizontalScrollIndicator={false}
+        originWhitelist={['*']}
+        onMessage={onMessage}
+        onLoad={() => setLoaded(true)}
+        // 允许加载 CDN 资源（marked.js / highlight.js / github.css）
+        mixedContentMode="always"
+        javaScriptEnabled
+        domStorageEnabled={false}
+        cacheEnabled
+      />
     </View>
   );
 }
