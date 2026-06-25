@@ -20,21 +20,12 @@ export default function TabsLayout() {
         tabBarActiveTintColor: '#1677FF',
         tabBarInactiveTintColor: '#999999',
         tabBarStyle: {
-          // 总高度 = 内容区 + 系统导航条占用空间，确保不遮挡也不重叠
           height: TAB_CONTENT_HEIGHT + insets.bottom,
           paddingBottom: TAB_PADDING_BOTTOM + insets.bottom,
           paddingTop: 4,
-          borderTopWidth: 0,
+          borderTopWidth: 0.5,
+          borderTopColor: '#E8E8E8',
           backgroundColor: Platform.OS === 'ios' ? 'rgba(255,255,255,0.92)' : '#FFFFFF',
-          // 左上、右上圆角
-          borderTopLeftRadius: 16,
-          borderTopRightRadius: 16,
-          // 圆角区域显示阴影代替边框
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: -2 },
-          shadowOpacity: 0.06,
-          shadowRadius: 8,
-          elevation: 12,
         },
         tabBarHideOnKeyboard: true,
         headerShown: false,
