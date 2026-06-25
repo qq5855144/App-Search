@@ -4,9 +4,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-// 固定内容区高度（不含系统导航条 inset）
-const TAB_CONTENT_HEIGHT = Platform.OS === 'ios' ? 54 : 50;
-const TAB_PADDING_BOTTOM = Platform.OS === 'ios' ? 10 : 6;
+// 内容区高度（图标 + 文字，不含系统导航条 inset）
+// Android 60 / iOS 54：足够容纳图标+标签文字
+const TAB_CONTENT_HEIGHT = Platform.OS === 'ios' ? 54 : 60;
+const TAB_PADDING_BOTTOM = Platform.OS === 'ios' ? 10 : 8;
 
 export default function TabsLayout() {
   // insets.bottom：Android 虚拟导航按钮高度 / iOS Home Indicator 高度
