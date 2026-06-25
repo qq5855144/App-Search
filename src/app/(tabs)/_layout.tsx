@@ -2,11 +2,16 @@ import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const TAB_HEIGHT = Platform.OS === 'ios' ? 64 : 60;
+// 固定内容区高度（不含系统导航条 inset）
+const TAB_CONTENT_HEIGHT = Platform.OS === 'ios' ? 54 : 50;
 const TAB_PADDING_BOTTOM = Platform.OS === 'ios' ? 10 : 6;
 
 export default function TabsLayout() {
+  // insets.bottom：Android 虚拟导航按钮高度 / iOS Home Indicator 高度
+  const insets = useSafeAreaInsets();
+
   return (
     <Tabs
       initialRouteName="home"
@@ -14,8 +19,9 @@ export default function TabsLayout() {
         tabBarActiveTintColor: '#1677FF',
         tabBarInactiveTintColor: '#999999',
         tabBarStyle: {
-          height: TAB_HEIGHT,
-          paddingBottom: TAB_PADDING_BOTTOM,
+          // 总高度 = 内容区 + 系统导航条占用空间，确保不遮挡也不重叠
+          height: TAB_CONTENT_HEIGHT + insets.bottom,
+          paddingBottom: TAB_PADDING_BOTTOM + insets.bottom,
           paddingTop: 4,
           borderTopWidth: 0.5,
           borderTopColor: '#E8E8E8',
