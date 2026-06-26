@@ -279,14 +279,21 @@ function splitBodyToSegments(body: string, inTable: boolean): Segment[] {
   scan(/<!--[\s\S]*?-->/g);
   // Markdown 图片 ![alt](url) — 整体保护
   scan(/!\[[^\]]*\]\([^)]*\)/g);
-  // Markdown 链接 [text](url) — 只保护 (url) 部分，text 允许翻译
+  // Markdown 链接 [text](url)
+  //   - text 含 HTML 标签（如 <img>）→ 整个链接不翻译，防止结构符号被全角化导致渲染失效
+  //   - text 为普通文字        → 只保护 ](url) 部分（含 ]、(、url、)），text 允许翻译
   {
     const linkRe = /\[([^\]]*)\]\(([^)]+)\)/g;
     let m: RegExpExecArray | null;
     while ((m = linkRe.exec(body)) !== null) {
-      const urlStart = m.index + 1 + m[1].length + 2;
-      const urlEnd   = urlStart + m[2].length;
-      ranges.push([urlStart, urlEnd]);
+      if (m[1].includes('<')) {
+        // text 含 HTML 标签 → 整个链接 raw
+        ranges.push([m.index, m.index + m[0].length]);
+      } else {
+        // 只保护 ](url) 部分，避免 ]( 被插空格或转全角
+        const closeStart = m.index + 1 + m[1].length; // ] 的位置
+        ranges.push([closeStart, m.index + m[0].length]);
+      }
     }
   }
   // 裸 URL（http/https）
