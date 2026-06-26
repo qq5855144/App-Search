@@ -144,20 +144,26 @@ export async function clearTranslationCache() {
   await AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
 }
 
-// ─── Markdown-aware 翻译（分块分段方案）────────────────────────────────────
+// ─── Markdown-aware 翻译（分块分段方案 v2）──────────────────────────────────
 //
-// 旧方案（PUA 占位符）的问题：百度翻译 API 可能删除或转义 \uE000 等私有区字符，
-// 导致占位符无法还原，Markdown 结构仍然被破坏。
+// 设计目标：翻译 API 永远只收到「纯文字」字符串，绝不收到任何 Markdown/HTML
+// 结构符号，从而彻底杜绝翻译服务破坏 README 渲染结构的问题。
 //
-// 新方案：完全不依赖占位符，改用「块级分离 + 行内区间分段」：
-//   1. 块级分离 — 将 Markdown 分成「保留块」（代码块/HTML/空行/表格分隔线）
-//                 和「翻译段」（文字行、标题、列表、blockquote 等）
-//   2. 行内区间 — 对每个翻译行，用正则找出行内不可翻译区间（行内代码、
-//                 HTML 标签、图片、链接 URL、裸 URL）
-//   3. 分片翻译 — 只翻译纯文字片段，translateBatch 批量请求减少 API 调用
-//   4. 原样重组 — 把翻译结果按原始索引填回，保留块一字不动地拼回
-//
-// 这样翻译 API 永远只收到纯文字，彻底避免破坏 Markdown / HTML 结构。
+// 核心流程：
+//   1. 块级分离 — 将 Markdown 逐行扫描，识别「保留块」（原样输出，不翻译）
+//                 和「翻译行」（需要翻译，但行内可能有结构区域需跳过）
+//      保留块覆盖：围栏/缩进代码块、HTML 块级标签行、表格分隔行、
+//                  参考链接定义、Front-matter、空行、GitHub Alert 行
+//   2. 行前缀剥离 — 对每个翻译行，先剥离不可翻译的行首前缀（标题 #、
+//                   列表 -/*/数字.、任务复选框 [ ]/[x]、引用 >、表格 |），
+//                   只将「正文内容」送翻译
+//   3. 行内区间保护 — 在正文内容中，进一步找出行内不可翻译区间（行内代码、
+//                   HTML 标签、图片 Markdown、链接 URL、裸 URL），
+//                   拆分为片段，只翻译纯文字片段
+//   4. 批量翻译 — 用 translateBatch 合并请求，减少 API 调用次数
+//   5. 翻译后处理 — 清理异常换行、转义表格单元格内意外插入的半角 |
+//   6. 结构校验 — 翻译后对比关键结构数量（标题/表格行/代码块），
+//                 差异超阈值时自动回退原文，保证渲染结果可靠
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 工具：区间合并
@@ -178,68 +184,130 @@ function mergeRanges(ranges: [number, number][]): [number, number][] {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 行内分段：找出一行内不可翻译的区间，返回片段数组
+// 行前缀剥离：提取不可翻译的行首前缀，返回 { prefix, body }
+//
+// 覆盖：
+//   标题         ## Title            → prefix="## ", body="Title"
+//   无序列表     - item / * item     → prefix="- ", body="item"
+//   有序列表     1. item             → prefix="1. ", body="item"
+//   任务列表     - [ ] item          → prefix="- [ ] ", body="item"
+//              - [x] item           → prefix="- [x] ", body="item"
+//   引用         > text              → prefix="> ", body="text"（递归处理嵌套）
+//   表格单元格   | a | b |           → prefix="|", body=" a | b |"
+//                                      （仅剥离首个 |，保留内容供后续分段）
 // ──────────────────────────────────────────────────────────────────────────────
-interface Segment { text: string; translate: boolean }
+function stripLinePrefix(line: string): { prefix: string; body: string } {
+  // ATX 标题：# / ## / ### ...（保留 # 和空格）
+  const headingMatch = line.match(/^(#{1,6} )/);
+  if (headingMatch) return { prefix: headingMatch[1], body: line.slice(headingMatch[1].length) };
 
-function splitLineToSegments(line: string): Segment[] {
+  // 任务列表（必须在普通列表之前检测）
+  const taskMatch = line.match(/^(\s*(?:[-*+]|\d+\.)\s+\[[ xX]\]\s)/);
+  if (taskMatch) return { prefix: taskMatch[1], body: line.slice(taskMatch[1].length) };
+
+  // 无序列表 - / * / +
+  const ulMatch = line.match(/^(\s*[-*+]\s+)/);
+  if (ulMatch) return { prefix: ulMatch[1], body: line.slice(ulMatch[1].length) };
+
+  // 有序列表 1. / 2. ...
+  const olMatch = line.match(/^(\s*\d+\.\s+)/);
+  if (olMatch) return { prefix: olMatch[1], body: line.slice(olMatch[1].length) };
+
+  // 引用行（> 可能多层嵌套，如 >> text）
+  // GitHub Alert（> [!NOTE] 等）已在块级作为 raw 处理，此处只处理普通引用
+  const bqMatch = line.match(/^(>\s?)/);
+  if (bqMatch) {
+    // 递归剥离多层 >>>
+    const inner = stripLinePrefix(line.slice(bqMatch[1].length));
+    return { prefix: bqMatch[1] + inner.prefix, body: inner.body };
+  }
+
+  // 表格行（以 | 开头）：剥离首个 | 作为前缀，body 继续处理单元格内容
+  if (line.trimStart().startsWith('|')) {
+    const leadingSpaces = line.match(/^(\s*)/)?.[1] ?? '';
+    const rest = line.slice(leadingSpaces.length + 1); // 去掉首个 |
+    return { prefix: leadingSpaces + '|', body: rest };
+  }
+
+  return { prefix: '', body: line };
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 行内分段：在 body 内找到不可翻译的区间，返回片段数组
+// ──────────────────────────────────────────────────────────────────────────────
+interface Segment { text: string; translate: boolean; inTable?: boolean }
+
+function splitBodyToSegments(body: string, inTable: boolean): Segment[] {
   const ranges: [number, number][] = [];
 
   const scan = (re: RegExp) => {
     const r = new RegExp(re.source, re.flags);
     let m: RegExpExecArray | null;
-    while ((m = r.exec(line)) !== null) {
+    while ((m = r.exec(body)) !== null) {
       ranges.push([m.index, m.index + m[0].length]);
     }
   };
 
   // 行内代码 `...`
   scan(/`[^`]+`/g);
-  // HTML 开标签（含属性，避免 height→高度）
+  // HTML 开标签（含属性，避免 height→高度 等被翻译）
   scan(/<[a-zA-Z][^>]*\/?>/g);
   // HTML 闭合标签
   scan(/<\/[a-zA-Z][^>]*>/g);
   // HTML 注释
   scan(/<!--[\s\S]*?-->/g);
-  // Markdown 图片 ![alt](url) — 整体保护（含括号/路径）
+  // Markdown 图片 ![alt](url) — 整体保护
   scan(/!\[[^\]]*\]\([^)]*\)/g);
-  // Markdown 链接 [text](url) — 只保护 (url) 部分
-  //   精确定位 url 的起止位置（text 允许翻译）
+  // Markdown 链接 [text](url) — 只保护 (url) 部分，text 允许翻译
   {
     const linkRe = /\[([^\]]*)\]\(([^)]+)\)/g;
     let m: RegExpExecArray | null;
-    while ((m = linkRe.exec(line)) !== null) {
-      // url 从 '[' + text + '](' 之后开始
+    while ((m = linkRe.exec(body)) !== null) {
       const urlStart = m.index + 1 + m[1].length + 2;
       const urlEnd   = urlStart + m[2].length;
       ranges.push([urlStart, urlEnd]);
     }
   }
-  // 裸 URL（http/https，不在已有保护区间内）
-  scan(/https?:\/\/[^\s)>\]"'`]+/g);
+  // 裸 URL
+  scan(/https?:\/\/[^\s)>\]"'`|]+/g);
+
+  // 表格行：| 是列分隔符，需原样保留，不送翻译
+  if (inTable) scan(/\s*\|\s*/g);
 
   const merged = mergeRanges(ranges);
   const segments: Segment[] = [];
   let pos = 0;
   for (const [s, e] of merged) {
-    if (pos < s) segments.push({ text: line.slice(pos, s), translate: true });
-    segments.push({ text: line.slice(s, e), translate: false });
+    if (pos < s) segments.push({ text: body.slice(pos, s), translate: true, inTable });
+    segments.push({ text: body.slice(s, e), translate: false, inTable });
     pos = e;
   }
-  if (pos < line.length) segments.push({ text: line.slice(pos), translate: true });
-  if (!segments.length)  segments.push({ text: line, translate: true });
+  if (pos < body.length) segments.push({ text: body.slice(pos), translate: true, inTable });
+  if (!segments.length)  segments.push({ text: body, translate: true, inTable });
 
   return segments;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 块级分离：把 Markdown 拆成「保留块」和「翻译行数组」
+// 翻译结果后处理：清理翻译 API 异常插入的换行和管道符
+// ──────────────────────────────────────────────────────────────────────────────
+function sanitizeTranslated(text: string, inTable: boolean): string {
+  // 1. 清除翻译 API 异常插入的换行（一个片段对应一个翻译结果，不应有换行）
+  let t = text.replace(/\r?\n/g, ' ').replace(/\r/g, ' ');
+
+  // 2. 表格单元格内：把半角 | 转为全角 ｜，防止破坏表格列结构
+  if (inTable) t = t.replace(/\|/g, '｜');
+
+  return t;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 块级分离：把 Markdown 拆成「保留块」和「翻译行」
 // ──────────────────────────────────────────────────────────────────────────────
 interface MarkdownBlock {
-  // raw=true  → 整行原样输出，不翻译
-  // raw=false → 需对该行的各片段翻译
   lines: string[];
-  raw: boolean;
+  raw: boolean;         // true → 整行原样输出
+  inTable?: boolean;    // true → 该行是表格数据行（非分隔行）
 }
 
 function splitToBlocks(md: string): MarkdownBlock[] {
@@ -249,6 +317,7 @@ function splitToBlocks(md: string): MarkdownBlock[] {
 
   while (i < rawLines.length) {
     const line = rawLines[i];
+    const trimmed = line.trim();
 
     // ── 围栏代码块 ``` 或 ~~~（完整保留，含结束围栏）
     const fenceMatch = line.match(/^(`{3,}|~{3,})/);
@@ -258,10 +327,7 @@ function splitToBlocks(md: string): MarkdownBlock[] {
       i++;
       while (i < rawLines.length) {
         chunk.push(rawLines[i]);
-        if (rawLines[i].trimEnd() === fence || rawLines[i].startsWith(fence)) {
-          i++;
-          break;
-        }
+        if (rawLines[i].trimEnd() === fence || rawLines[i].startsWith(fence)) { i++; break; }
         i++;
       }
       blocks.push({ lines: chunk, raw: true });
@@ -275,15 +341,22 @@ function splitToBlocks(md: string): MarkdownBlock[] {
       continue;
     }
 
-    // ── 纯 HTML 块级标签行
+    // ── 纯 HTML 块级标签行（以 < 开头）
     if (/^\s*<[a-zA-Z!]/.test(line)) {
       blocks.push({ lines: [line], raw: true });
       i++;
       continue;
     }
 
-    // ── 表格分隔行（|---|---| 或 :---: 等）
-    if (/^\s*\|?[\s:]*-{2,}[\s:]*[|\s:|-]*$/.test(line) && line.trim().length > 0) {
+    // ── 表格分隔行（|---|---| 或 :---: 等）— 原样保留
+    if (/^\s*\|?[\s:]*-{2,}[\s:]*[|\s:|-]*$/.test(line) && trimmed.length > 0) {
+      blocks.push({ lines: [line], raw: true });
+      i++;
+      continue;
+    }
+
+    // ── GitHub Alert 行（> [!NOTE] / > [!WARNING] 等）— 原样保留
+    if (/^\s*>\s*\[!(NOTE|TIP|WARNING|CAUTION|IMPORTANT)\]/i.test(line)) {
       blocks.push({ lines: [line], raw: true });
       i++;
       continue;
@@ -296,27 +369,26 @@ function splitToBlocks(md: string): MarkdownBlock[] {
       continue;
     }
 
-    // ── Front-matter（文件开头 ---）
-    if (i === 0 && line.trim() === '---') {
+    // ── Front-matter（文件开头 --- 块）
+    if (i === 0 && trimmed === '---') {
       const chunk: string[] = [line];
       i++;
-      while (i < rawLines.length && rawLines[i].trim() !== '---') {
-        chunk.push(rawLines[i++]);
-      }
+      while (i < rawLines.length && rawLines[i].trim() !== '---') chunk.push(rawLines[i++]);
       if (i < rawLines.length) chunk.push(rawLines[i++]);
       blocks.push({ lines: chunk, raw: true });
       continue;
     }
 
-    // ── 空行（保留，不翻译）
-    if (!line.trim()) {
+    // ── 空行
+    if (!trimmed) {
       blocks.push({ lines: [line], raw: true });
       i++;
       continue;
     }
 
-    // ── 普通文字行（标题、段落、列表项、blockquote 等）→ 翻译
-    blocks.push({ lines: [line], raw: false });
+    // ── 普通文字行（标题/段落/列表/引用/表格数据行 等）→ 翻译
+    const isTableRow = trimmed.startsWith('|') || trimmed.endsWith('|');
+    blocks.push({ lines: [line], raw: false, inTable: isTableRow });
     i++;
   }
 
@@ -324,41 +396,88 @@ function splitToBlocks(md: string): MarkdownBlock[] {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// 结构校验：比较原始 Markdown 和翻译后 Markdown 的关键结构数量
+// 差异超过阈值时，判定翻译破坏了结构，回退到原文
+// ──────────────────────────────────────────────────────────────────────────────
+interface StructCounts {
+  headings: number;     // # 标题行数
+  tableSeps: number;    // |---| 分隔行数
+  codeFences: number;   // ``` 围栏标记数
+  listItems: number;    // 列表项行数
+}
+
+function countStructures(md: string): StructCounts {
+  const lines = md.split('\n');
+  let headings = 0, tableSeps = 0, codeFences = 0, listItems = 0;
+  let inFence = false;
+  for (const line of lines) {
+    if (/^(`{3,}|~{3,})/.test(line)) { codeFences++; inFence = !inFence; continue; }
+    if (inFence) continue;
+    if (/^#{1,6} /.test(line))                                   headings++;
+    if (/^\s*\|?[\s:]*-{2,}[\s:]*[|\s:|-]*$/.test(line) && line.trim()) tableSeps++;
+    if (/^\s*[-*+]\s|^\s*\d+\.\s/.test(line))                   listItems++;
+  }
+  return { headings, tableSeps, codeFences, listItems };
+}
+
+/** 若任意关键结构的数量差异超过 20%（且原文有该结构），判定为结构损坏 */
+function isStructurallyCorrupted(orig: StructCounts, translated: StructCounts): boolean {
+  const check = (o: number, t: number) => o > 0 && Math.abs(o - t) / o > 0.2;
+  return check(orig.headings,   translated.headings)
+      || check(orig.tableSeps,  translated.tableSeps)
+      || check(orig.codeFences, translated.codeFences);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // 主入口：translateMarkdown
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
- * 翻译 Markdown 文本，保护语法结构，只翻译纯文字片段。
+ * 翻译 Markdown 文本，严格保护语法结构，只翻译纯文字片段。
  *
- * 不依赖任何占位符机制，翻译 API 永远只收到纯文字字符串，
- * 彻底避免 HTML 属性名被翻译（height→高度）、代码块被翻译等问题。
+ * 保护对象：标题 #、列表 -/1.、任务列表 [ ]/[x]、引用 >、表格 |、
+ *           代码块/行内代码、HTML 标签和属性、图片 Markdown、链接 URL、
+ *           参考链接定义、GitHub Alert（> [!NOTE] 等）。
+ *
+ * 翻译后处理：清理异常换行、表格内半角 | 转全角 ｜。
+ * 结构校验：翻译后结构损坏时自动回退原文。
  *
  * @param md  原始 Markdown
  * @param to  目标语言
- * @returns   结构完整的翻译后 Markdown，失败时降级返回原文
+ * @returns   结构完整的翻译后 Markdown，失败或结构损坏时降级返回原文
  */
 export async function translateMarkdown(md: string, to: 'zh' | 'en'): Promise<string> {
   if (!md?.trim()) return md;
 
+  // 翻译前记录结构特征，用于后置校验
+  const origCounts = countStructures(md);
+
   try {
     const blocks = splitToBlocks(md);
 
-    // ── 第一步：收集所有需要翻译的纯文字片段
-    // segmentMap[blockIdx][lineIdx] = Segment[]
-    // 同时把所有 translate:true 的片段文字顺序放入 toTranslateTexts
-    type SegMap = Segment[][];
-    const segMaps: (SegMap | null)[] = blocks.map(block => {
+    // ── 第一步：对每个翻译行，剥离前缀后进行行内分段
+    type SegMapEntry = {
+      prefix: string;
+      segments: Segment[];
+    };
+    // segEntries[blockIdx] = SegMapEntry[] | null（raw 块为 null）
+    const segEntries: (SegMapEntry[] | null)[] = blocks.map(block => {
       if (block.raw) return null;
-      return block.lines.map(line => splitLineToSegments(line));
+      return block.lines.map(line => {
+        const { prefix, body } = stripLinePrefix(line);
+        const segments = splitBodyToSegments(body, block.inTable ?? false);
+        return { prefix, segments };
+      });
     });
 
+    // ── 第二步：收集所有需要翻译的纯文字片段
     const toTranslateTexts: string[] = [];
     const textIndex: Array<{ bi: number; li: number; si: number }> = [];
 
-    segMaps.forEach((segMap, bi) => {
-      if (!segMap) return;
-      segMap.forEach((segs, li) => {
-        segs.forEach((seg, si) => {
+    segEntries.forEach((entries, bi) => {
+      if (!entries) return;
+      entries.forEach((entry, li) => {
+        entry.segments.forEach((seg, si) => {
           if (seg.translate && seg.text.trim()) {
             textIndex.push({ bi, li, si });
             toTranslateTexts.push(seg.text);
@@ -367,35 +486,44 @@ export async function translateMarkdown(md: string, to: 'zh' | 'en'): Promise<st
       });
     });
 
-    if (!toTranslateTexts.length) return md; // 无可翻译内容
+    if (!toTranslateTexts.length) return md;
 
-    // ── 第二步：批量翻译
+    // ── 第三步：批量翻译
     const translated = await translateBatch(toTranslateTexts, to);
 
-    // ── 第三步：把翻译结果填回 segMaps
+    // ── 第四步：填回翻译结果，并执行后处理
     translated.forEach((dst, idx) => {
       const { bi, li, si } = textIndex[idx];
-      const segMap = segMaps[bi];
-      if (segMap) segMap[li][si] = { ...segMap[li][si], text: dst };
+      const entries = segEntries[bi];
+      if (!entries) return;
+      const seg = entries[li].segments[si];
+      const cleaned = sanitizeTranslated(dst, seg.inTable ?? false);
+      entries[li].segments[si] = { ...seg, text: cleaned };
     });
 
-    // ── 第四步：重组
+    // ── 第五步：重组
     const resultLines: string[] = [];
     blocks.forEach((block, bi) => {
-      const segMap = segMaps[bi];
-      if (!segMap) {
-        // 保留块：原样输出
+      const entries = segEntries[bi];
+      if (!entries) {
         resultLines.push(...block.lines);
       } else {
-        // 翻译块：把片段拼回行
-        segMap.forEach(segs => {
-          resultLines.push(segs.map(s => s.text).join(''));
+        entries.forEach(({ prefix, segments }) => {
+          resultLines.push(prefix + segments.map(s => s.text).join(''));
         });
       }
     });
 
-    return resultLines.join('\n');
+    const result = resultLines.join('\n');
+
+    // ── 第六步：结构校验，损坏时回退原文
+    const translatedCounts = countStructures(result);
+    if (isStructurallyCorrupted(origCounts, translatedCounts)) {
+      return md;
+    }
+
+    return result;
   } catch {
-    return md; // 任何异常均降级返回原文
+    return md;
   }
 }
