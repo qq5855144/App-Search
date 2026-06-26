@@ -143,3 +143,79 @@ export async function clearTranslationCache() {
   cacheLoaded = false;
   await AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
 }
+
+// ─── Markdown-aware 翻译 ────────────────────────────────────────────────────
+//
+// 直接翻译原始 Markdown 会导致翻译 API 把 HTML 属性名（height → 高度）、
+// 代码块内容、URLs 等一并翻译，破坏 Markdown 结构。
+//
+// 解决方案：用 Unicode 私有使用区域（PUA）占位符 \uE000n\uE001 保护
+// 不应翻译的区域，翻译完成后还原。PUA 字符对翻译 API 透明（不会被翻译或改写）。
+
+const PUA_START = '\uE000';
+const PUA_END   = '\uE001';
+const PUA_RE    = /\uE000(\d+)\uE001/g;
+
+function protectMarkdown(md: string): { text: string; map: string[] } {
+  const map: string[] = [];
+
+  const protect = (s: string): string => {
+    const token = `${PUA_START}${map.length}${PUA_END}`;
+    map.push(s);
+    return token;
+  };
+
+  const text = md
+    // 1. 围栏代码块（``` ... ```，含语言标记）
+    .replace(/```[\s\S]*?```/g, m => protect(m))
+    // 2. 缩进代码块（4 空格 / Tab 开头）
+    .replace(/^(?: {4}|\t).+$/gm, m => protect(m))
+    // 3. 行内代码（`...`）
+    .replace(/`[^`\n]+`/g, m => protect(m))
+    // 4. HTML 标签（含所有属性，避免 height → 高度 等问题）
+    .replace(/<[a-zA-Z][^>]*\/?>/g, m => protect(m))
+    // 5. 闭合 HTML 标签
+    .replace(/<\/[a-zA-Z][^>]*>/g, m => protect(m))
+    // 6. Markdown 图片 ![alt](url) — 整体保护（alt 是可读文字，但 URL 不可翻译；
+    //    为简化实现一并保护，避免 alt 被错误翻译破坏语法）
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, m => protect(m))
+    // 7. Markdown 链接 [text](url) — 只保护 (url) 部分，text 允许翻译
+    .replace(/(\[[^\]]*\])\(([^)]+)\)/g, (_m, label, url) => `${label}(${protect(url)})`)
+    // 8. 裸 URL
+    .replace(/(?<![(\[])https?:\/\/[^\s)>\]]+/g, m => protect(m))
+    // 9. Markdown 参考链接定义 [id]: url
+    .replace(/^\[[^\]]+\]:\s*\S+.*$/gm, m => protect(m))
+    // 10. Front-matter（--- ... ---）
+    .replace(/^---[\s\S]*?^---/m, m => protect(m));
+
+  return { text, map };
+}
+
+function restoreMarkdown(text: string, map: string[]): string {
+  return text.replace(PUA_RE, (_m, i) => map[parseInt(i, 10)] ?? _m);
+}
+
+/**
+ * 翻译 Markdown 文本：保护语法结构，只翻译可读文字
+ * @param md  原始 Markdown
+ * @param to  目标语言
+ * @returns   结构完整的翻译后 Markdown
+ */
+export async function translateMarkdown(md: string, to: 'zh' | 'en'): Promise<string> {
+  if (!md?.trim()) return md;
+
+  const { text, map } = protectMarkdown(md);
+
+  // 如果保护后几乎没有可翻译文字（全是代码/标签），直接返回原文
+  const stripped = text.replace(PUA_RE, '').trim();
+  if (!stripped) return md;
+
+  let translated: string;
+  try {
+    translated = await translateText(text, to);
+  } catch {
+    return md; // 翻译失败，降级返回原文
+  }
+
+  return restoreMarkdown(translated, map);
+}

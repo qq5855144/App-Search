@@ -12,6 +12,7 @@ import AppIcon from '@/components/openappstore/AppIcon';
 import PlatformTag from '@/components/openappstore/PlatformTag';
 import { useDownload } from '@/ctx/DownloadContext';
 import { useTranslation } from '@/ctx/TranslationContext';
+import { translateMarkdown } from '@/lib/translateApi';
 import MarkdownSection from './MarkdownSection';
 
 function formatBytes(bytes: number) {
@@ -118,7 +119,9 @@ export default function DetailScreen() {
       }
       const [td, tr] = await Promise.all([
         desc ? translate(desc) : Promise.resolve(''),
-        readme ? translate(readme) : Promise.resolve(''),
+        // README 用 Markdown-aware 翻译：保护代码块/HTML 标签/URL，只翻译可读文字
+        // 避免翻译 API 把 height 译成 高度、破坏 Markdown 语法导致渲染失败
+        readme ? translateMarkdown(readme, targetLang) : Promise.resolve(''),
       ]);
       setDisplayDesc(td);
       setDisplayReadme(tr);
