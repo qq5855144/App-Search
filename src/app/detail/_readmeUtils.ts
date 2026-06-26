@@ -21,9 +21,17 @@ export const README_CSS = `
   a  { color: #0969da; text-decoration: none; }
   a:hover { text-decoration: underline; }
   /* 图片：max-width 限制宽度，不强制 width:auto 避免压缩小图 */
-  img { max-width: 100%; height: auto; display: block; margin: 4px 0; }
+  img {
+    max-width: 100%; height: auto; display: block; margin: 8px 0;
+    /* broken image 时显示 alt 文字，方便排查 */
+    min-height: 1px;
+  }
   /* 徽章/行内小图、链接内图片保持 inline */
-  p > img, li img, a > img { display: inline-block; margin: 1px 2px; }
+  p > img, li img, a > img, td img, th img {
+    display: inline-block; margin: 2px 3px; vertical-align: middle;
+  }
+  /* 居中单独一行的图片（常见于截图展示） */
+  p:has(> img:only-child) { text-align: center; }
   /* 确保 markdown 根容器始终撑满视口宽度 */
   #md { width: 100%; }
   code {
@@ -107,12 +115,18 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
     // 1. 解码原始 Markdown
     var raw = decodeURIComponent(escape(atob('${b64}')));
 
-    // 2. 解析相对 URL → 绝对 URL
+    // 2. 解析相对 URL → 绝对 URL（三种形式全覆盖）
+    // 2a. Markdown 行内链接 [text](relative/path)
     raw = raw.replace(/(\\]\\()((?!https?:\\/\\/|mailto:|#)[^)]+)(\\))/g, function(m, a, p, c) {
       return a + '${safeBase}' + p + c;
     });
+    // 2b. Markdown 图片 ![alt](relative/path)
     raw = raw.replace(/(!\\[[^\\]]*\\]\\()((?!https?:\\/\\/)[^)]+)(\\))/g, function(m, a, p, c) {
       return a + '${safeBase}' + p + c;
+    });
+    // 2c. HTML <img src="relative"> / <img src='relative'>（README 中常见 HTML 标签写法）
+    raw = raw.replace(/(<img[^>]+\\bsrc=)(["'])((?!https?:\\/\\/|data:|\/\/)[^"']+)(\\2)/gi, function(m, pre, q, p, qc) {
+      return pre + q + '${safeBase}' + p + qc;
     });
 
     // 3. 配置 marked（GFM + 代码高亮）
@@ -164,13 +178,19 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
     // 因此对 width > viewportWidth 的图片直接 removeAttribute
     var vpW = ${viewportWidth};
     document.querySelectorAll('#md img').forEach(function(img) {
+      // 7a. 兜底：确保 DOM 中所有 img src 为绝对 URL
+      var src = img.getAttribute('src') || '';
+      if (src && !/^https?:\\/\\/|^data:|^\\/\\//.test(src)) {
+        img.setAttribute('src', '${safeBase}' + src.replace(/^\\//, ''));
+      }
+      // 7b. 移除超宽的 width/height HTML 属性
       var wAttr = img.getAttribute('width') || '';
       var wNum = parseFloat(wAttr);
       if (wAttr.indexOf('%') === -1 && wNum > vpW) {
         img.removeAttribute('width');
         img.removeAttribute('height');
       }
-      // 移除 inline style 中超宽的 width（如 style="width:480px"）
+      // 7c. 移除 inline style 中超宽的 width（如 style="width:480px"）
       if (img.style.width && img.style.width.indexOf('%') === -1 &&
           parseFloat(img.style.width) > vpW) {
         img.style.width = '';
