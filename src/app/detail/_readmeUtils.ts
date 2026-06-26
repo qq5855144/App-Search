@@ -105,31 +105,40 @@ const HEIGHT_SCRIPT = `
  * @param viewportWidth  WebView 实际像素宽度，用于精确 viewport 避免缩放
  */
 export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth: number): string {
-  // base64 编码：彻底避免 markdown 内容中反引号、$、\ 等导致的 JS 注入/转义问题
-  // React Native 环境：使用 global btoa（React Native 已内置）
-  const b64 = btoa(unescape(encodeURIComponent(markdown)));
+  // 用 JSON.stringify 序列化 Markdown：
+  //   - 不依赖废弃的 btoa/unescape/escape（Hermes 实现存在差异）
+  //   - JSON.stringify 在所有 JS 环境中均可靠
+  //   - 替换 </ 为 <\/ 防止 HTML 解析器提前截断 <script> 块
+  const safeMarkdown = JSON.stringify(markdown).replace(/<\//g, '<\\/');
 
-  const safeBase = baseUrl.replace(/'/g, "\\'");
+  const safeBase = JSON.stringify(baseUrl); // 带外层双引号的 JSON 字符串
 
   const js = `
-    // 1. 解码原始 Markdown
-    var raw = decodeURIComponent(escape(atob('${b64}')));
+    // 全局错误捕获：把 WebView 内 JS 错误上报给 React Native（便于诊断）
+    window.onerror = function(msg, src, line, col, err) {
+      var info = JSON.stringify({ type: 'rnerror', message: String(msg), line: line });
+      if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(info);
+      return true;
+    };
+
+    try {
+
+    // 1. 原始 Markdown 内容（JSON 字符串字面量，已安全转义）
+    var raw = ${safeMarkdown};
 
     // 2. 解析相对 URL → 绝对 URL（Markdown 语法部分，HTML img 标签在 DOM 阶段修正）
+    var _base = ${safeBase};
     // 2a. Markdown 行内链接 [text](relative/path)
     raw = raw.replace(/(\\]\\()((?!https?:\\/\\/|mailto:|#)[^)]+)(\\))/g, function(m, a, p, c) {
-      return a + '${safeBase}' + p + c;
+      return a + _base + p + c;
     });
     // 2b. Markdown 图片 ![alt](relative/path)
     raw = raw.replace(/(!\\[[^\\]]*\\]\\()((?!https?:\\/\\/)[^)]+)(\\))/g, function(m, a, p, c) {
-      return a + '${safeBase}' + p + c;
+      return a + _base + p + c;
     });
 
     // 3. 配置 marked（GFM + 代码高亮）
-    marked.use({
-      gfm: true,
-      breaks: false,
-    });
+    marked.use({ gfm: true, breaks: false });
     var renderer = new marked.Renderer();
     renderer.code = function(code, lang) {
       var language = (lang || '').split(/[\\s,]/)[0];
@@ -169,14 +178,12 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
     document.getElementById('md').innerHTML = html;
 
     // 7. 仅移除超出容器宽度的固定像素 width/height 属性（保留百分比、小尺寸徽章等）
-    // CSS max-width:100% 无法阻止浏览器在布局阶段用 HTML attribute 撑开文档最小宽，
-    // 因此对 width > viewportWidth 的图片直接 removeAttribute
     var vpW = ${viewportWidth};
     document.querySelectorAll('#md img').forEach(function(img) {
       // 7a. 兜底：确保 DOM 中所有 img src 为绝对 URL
       var src = img.getAttribute('src') || '';
       if (src && !/^https?:\\/\\/|^data:|^\\/\\//.test(src)) {
-        img.setAttribute('src', '${safeBase}' + src.replace(/^\\//, ''));
+        img.setAttribute('src', _base + src.replace(/^\\//, ''));
       }
       // 7b. 移除超宽的 width/height HTML 属性
       var wAttr = img.getAttribute('width') || '';
@@ -192,6 +199,16 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
         img.style.height = '';
       }
     });
+
+    } catch(e) {
+      // 渲染异常时显示错误信息，避免空白页
+      document.getElementById('md').innerHTML =
+        '<p style="color:#cf222e;font-family:monospace;font-size:13px;padding:8px;border:1px solid #cf222e;border-radius:4px">'
+        + 'README 渲染错误：' + e.message + '</p>';
+      if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'rnerror', message: e.message }));
+      }
+    }
   `;
 
   return (

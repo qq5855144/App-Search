@@ -23,10 +23,14 @@ export default function MarkdownSection({ content, owner, repo }: Props) {
 
   // html 与 source 都 memoize：任何一个引用变化都会触发 WebView 完整重载
   // → 重载会重新执行 HEIGHT_SCRIPT → postMessage → setHeight → re-render → 无限循环
-  const html = useMemo(
-    () => buildReadmeHtml(content, baseUrl, webViewWidth),
-    [content, baseUrl, webViewWidth]
-  );
+  const html = useMemo(() => {
+    try {
+      return buildReadmeHtml(content, baseUrl, webViewWidth);
+    } catch (e) {
+      console.error('[MarkdownSection] buildReadmeHtml 异常:', e);
+      return `<html><body style="font-family:sans-serif;padding:12px;color:#cf222e"><p>README 构建错误：${String(e)}</p></body></html>`;
+    }
+  }, [content, baseUrl, webViewWidth]);
   const source = useMemo(
     () => ({ html, baseUrl: `https://github.com/${owner}/${repo}` }),
     [html, owner, repo]
@@ -38,6 +42,9 @@ export default function MarkdownSection({ content, owner, repo }: Props) {
       const data = JSON.parse(e.nativeEvent.data);
       if (data.type === 'height' && typeof data.height === 'number') {
         setHeight(prev => Math.max(prev, data.height + 24));
+      } else if (data.type === 'rnerror') {
+        // WebView 内部 JS 错误诊断（window.onerror / catch 上报）
+        console.error('[MarkdownSection] WebView JS 错误:', data.message, 'line:', data.line);
       }
     } catch { /* 忽略非 JSON 消息 */ }
   }, []);
@@ -77,6 +84,7 @@ export default function MarkdownSection({ content, owner, repo }: Props) {
           originWhitelist={['*']}
           onMessage={onMessage}
           onLoad={() => setLoaded(true)}
+          onError={(e) => console.error('[MarkdownSection] WebView onError:', e.nativeEvent)}
           mixedContentMode="always"
           javaScriptEnabled
           domStorageEnabled={false}
