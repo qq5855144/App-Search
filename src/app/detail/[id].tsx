@@ -423,7 +423,12 @@ export default function DetailScreen() {
             owner={owner ?? ''}
             repo={repo ?? ''}
           />
-        ) : null}
+        ) : (
+          <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4 }}>
+            <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A', marginBottom: 6 }}>README</Text>
+            <Text style={{ fontSize: 13, color: '#999' }}>暂无 README 或获取失败</Text>
+          </View>
+        )}
       </ScrollView>
     </SafeAreaView>
   );

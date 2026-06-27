@@ -635,23 +635,53 @@ export async function fetchReadme(owner: string, repo: string): Promise<string> 
   const cacheKey = `readme:${owner}/${repo}`
   const cached = await getCache<string>(cacheKey)
   if (cached !== null) return cached
+
+  // ── 1. 优先走 Edge Function（支持 Token 私有仓库）──────────────────────────
   const data = await callEdgeFunction({
     action: 'readme',
     params: { owner, repo },
     token: cachedToken,
   })
-  // GitHub API 返回的 base64 中含 `\n`，必须先清除再解码
   const raw = base64Decode(data?.data?.content || '')
-  if (!raw) return ''
-  let result = ''
-  try {
-    const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0))
-    result = new TextDecoder().decode(bytes)
-  } catch {
-    try { result = decodeURIComponent(escape(raw)) } catch { result = '' }
+  if (raw) {
+    let result = ''
+    try {
+      const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0))
+      result = new TextDecoder().decode(bytes)
+    } catch {
+      try { result = decodeURIComponent(escape(raw)) } catch { result = '' }
+    }
+    if (result) {
+      await setCache(cacheKey, result, DAY)
+      return result
+    }
   }
-  await setCache(cacheKey, result, DAY)
-  return result
+
+  // ── 2. Edge Function 失败：直连 raw.githubusercontent.com ──────────────────
+  // 不依赖 Supabase，公开仓库直接可用。依次尝试 HEAD / main / master
+  const rawBases = ['HEAD', 'main', 'master']
+  const readmeFiles = ['README.md', 'readme.md', 'Readme.md', 'README.MD']
+  const headers: Record<string, string> = {
+    'Accept': 'text/plain',
+    ...(cachedToken ? { Authorization: `token ${cachedToken}` } : {}),
+  }
+  for (const branch of rawBases) {
+    for (const file of readmeFiles) {
+      try {
+        const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${file}`
+        const res = await fetch(url, { headers })
+        if (res.ok) {
+          const text = await res.text()
+          if (text && text.trim()) {
+            await setCache(cacheKey, text, DAY)
+            return text
+          }
+        }
+      } catch { /* 继续尝试 */ }
+    }
+  }
+
+  return ''
 }
 
 export async function fetchContributors(owner: string, repo: string): Promise<Array<{ login: string; avatar_url: string; html_url: string }>> {
