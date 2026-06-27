@@ -233,18 +233,13 @@ function mapErrorMessage(msg: string): { message: string; retryable: boolean } {
  */
 async function getFileSize(url: string): Promise<number> {
   try {
-    if (IS_WEB) {
-      const response = await fetch(url, { method: 'HEAD' });
-      const contentLength = response.headers.get('content-length');
-      return contentLength ? parseInt(contentLength, 10) : 0;
-    } else if (IS_ANDROID) {
-      const response = await ReactNativeBlobUtil.fetch('HEAD', url, {
-        'User-Agent': 'OpenAppStore/2.0',
+    if (IS_WEB || IS_ANDROID || IS_IOS) {
+      const response = await fetch(url, {
+        method: 'HEAD',
+        headers: {
+          'User-Agent': 'OpenAppStore/2.0',
+        },
       });
-      const contentLength = response.info().headers['content-length'];
-      return contentLength ? parseInt(contentLength, 10) : 0;
-    } else if (IS_IOS) {
-      const response = await fetch(url, { method: 'HEAD' });
       const contentLength = response.headers.get('content-length');
       return contentLength ? parseInt(contentLength, 10) : 0;
     }
@@ -259,18 +254,15 @@ async function getFileSize(url: string): Promise<number> {
  */
 async function supportsRangeRequests(url: string): Promise<boolean> {
   try {
-    if (IS_WEB) {
-      const response = await fetch(url, { method: 'HEAD' });
-      return response.headers.get('accept-ranges') === 'bytes';
-    } else if (IS_ANDROID) {
-      const response = await ReactNativeBlobUtil.fetch('HEAD', url, {
-        'User-Agent': 'OpenAppStore/2.0',
+    if (IS_WEB || IS_ANDROID || IS_IOS) {
+      const response = await fetch(url, {
+        method: 'HEAD',
+        headers: {
+          'User-Agent': 'OpenAppStore/2.0',
+        },
       });
-      const headers = response.info().headers;
-      return headers['accept-ranges'] === 'bytes' || headers['content-range'] !== undefined;
-    } else if (IS_IOS) {
-      const response = await fetch(url, { method: 'HEAD' });
-      return response.headers.get('accept-ranges') === 'bytes';
+      return response.headers.get('accept-ranges') === 'bytes'
+        || response.headers.get('content-range') !== null;
     }
   } catch (e) {
     console.warn('Failed to check range support:', e);
@@ -1047,7 +1039,7 @@ async function downloadChunkWeb(task: DownloadTask, chunk: ChunkInfo): Promise<v
 
 async function mergeChunksAndDownloadWeb(task: DownloadTask): Promise<void> {
   try {
-    const chunks: Uint8Array[] = [];
+    const chunks: ArrayBuffer[] = [];
 
     for (const chunk of task.chunks) {
       const key = `chunk_${task.id}_${chunk.index}`;
@@ -1058,7 +1050,7 @@ async function mergeChunksAndDownloadWeb(task: DownloadTask): Promise<void> {
         for (let i = 0; i < binaryString.length; i++) {
           bytes[i] = binaryString.charCodeAt(i);
         }
-        chunks.push(bytes);
+        chunks.push(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
         localStorage.removeItem(key);
       }
     }
