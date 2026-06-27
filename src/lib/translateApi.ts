@@ -6,9 +6,10 @@
 import { supabase } from '@/client/supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// 内存缓存：key = "from|to|text"
+// 内存缓存：key = "to|text"
 const memCache = new Map<string, string>();
-const STORAGE_KEY = 'oas_translate_cache';
+// 升级版本号 → 旧 AsyncStorage 缓存自动废弃，强制使用新翻译逻辑重新翻译
+const STORAGE_KEY = 'oas_translate_cache_v3';
 
 /** 从 AsyncStorage 加载持久化缓存 */
 let cacheLoaded = false;
