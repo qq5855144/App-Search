@@ -134,36 +134,51 @@ export default function DetailScreen() {
     return () => { cancelled = true; };
   }, [owner, repo]);
 
-  // 翻译描述和 README（enabled/targetLang/原文 任一变化时重新执行）
+  // ── Effect A：翻译应用描述（与 README 完全解耦，避免交叉触发）
   useEffect(() => {
+    const desc = app?.description || '';
+    if (!enabled || !desc) {
+      setDisplayDesc(desc);
+      return;
+    }
     let cancelled = false;
     (async () => {
-      const desc = app?.description || '';
-      if (!enabled) {
-        // 翻译关闭：直接使用原文，README 一次性确定，不触发二次 WebView 重载
-        if (!cancelled) {
-          setDisplayDesc(desc);
-          setReadmeToRender(readme);
-          setReadmeTranslating(false);
-        }
-        return;
-      }
-      // 翻译开启：先标记"翻译中"，等翻译完成后才一次性设置 readmeToRender
-      // 这样 MarkdownSection 只接收一次稳定内容，WebView 不会因中间状态重载而闪烁
-      if (readme) setReadmeTranslating(true);
-      const [td, tr] = await Promise.all([
-        desc ? translate(desc) : Promise.resolve(''),
-        // README 用 Markdown-aware 翻译：保护代码块/HTML 标签/URL，只翻译可读文字
-        readme ? translateMarkdown(readme, targetLang) : Promise.resolve(''),
-      ]);
+      const td = await translate(desc);
+      if (!cancelled) setDisplayDesc(td);
+    })();
+    return () => { cancelled = true; };
+  }, [app?.description, enabled, targetLang]);
+
+  // ── Effect B：README 渲染（原文 / 翻译后）
+  // 只依赖 readme/enabled/targetLang，不依赖 app?.description，
+  // 避免 setApp() 触发本 effect 时 readme 仍为 '' 而意外清空 readmeToRender。
+  useEffect(() => {
+    // README 尚未加载完成，保持空状态等待
+    if (!readme) {
+      setReadmeToRender('');
+      setReadmeTranslating(false);
+      return;
+    }
+    if (!enabled) {
+      // 翻译关闭：直接用原文，WebView 只加载一次
+      setReadmeToRender(readme);
+      setReadmeTranslating(false);
+      return;
+    }
+    // 翻译开启：先显示"翻译中"骨架，翻译完成后一次性传入 MarkdownSection，
+    // 保证 WebView 整个生命周期只加载一次最终内容，不产生重载闪烁
+    let cancelled = false;
+    setReadmeTranslating(true);
+    (async () => {
+      // Markdown-aware 翻译：保护代码块/HTML 标签/链接/URL，只翻译可读文字
+      const tr = await translateMarkdown(readme, targetLang);
       if (!cancelled) {
-        setDisplayDesc(td);
         setReadmeToRender(tr || readme); // 翻译失败降级原文
         setReadmeTranslating(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [app?.description, readme, enabled, targetLang]);
+  }, [readme, enabled, targetLang]);
 
   const toggleFav = async () => {
     if (!app) return;
