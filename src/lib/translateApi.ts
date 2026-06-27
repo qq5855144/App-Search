@@ -9,7 +9,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // 内存缓存：key = "to|text"
 const memCache = new Map<string, string>();
 // 升级版本号 → 旧 AsyncStorage 缓存自动废弃，强制使用新翻译逻辑重新翻译
-const STORAGE_KEY = 'oas_translate_cache_v4';
+const STORAGE_KEY = 'oas_translate_cache_v5';
 
 /** 从 AsyncStorage 加载持久化缓存 */
 let cacheLoaded = false;
@@ -285,26 +285,9 @@ function splitBodyToSegments(body: string, inTable: boolean): Segment[] {
   scan(/!\[[^\]]*\]\([^)]*\)/g);
   // Reference-style 图片 ![alt][ref]
   scan(/!\[[^\]]*\]\[[^\]]*\]/g);
-  // Markdown 链接 [text](url)
-  //   - text 含 HTML 标签（如 <img>）→ 整个链接不翻译
-  //   - text 为普通文字 → 保护 [ 字符本身（防止翻译 API 看到 [ 后自动配对 ] 破坏结构）
-  //                      + 保护 ](url) 部分；只翻译 text 内容
-  {
-    const linkRe = /\[([^\]]*)\]\(([^)]+)\)/g;
-    let m: RegExpExecArray | null;
-    while ((m = linkRe.exec(body)) !== null) {
-      if (m[1].includes('<')) {
-        // text 含 HTML 标签 → 整个链接 raw
-        ranges.push([m.index, m.index + m[0].length]);
-      } else {
-        // 保护 [ 字符（翻译 API 不可见，不会自动补配对的 ]）
-        ranges.push([m.index, m.index + 1]);
-        // 保护 ](url) 部分（从 ] 到末尾），避免 ]( 被插空格或转全角
-        const closeStart = m.index + 1 + m[1].length; // ] 的位置
-        ranges.push([closeStart, m.index + m[0].length]);
-      }
-    }
-  }
+  // Markdown 链接 [text](url) — 整体保护
+  // 翻译 API 在看到链接文字时会引入 [ ]、（）等结构字符，破坏渲染；整体 raw 最安全
+  scan(/\[[^\]]*\]\([^)]*\)/g);
   // Reference-style 链接 [text][ref] / [text][]
   scan(/\[[^\]]+\]\[[^\]]*\]/g);
   // 自动链接 <https://...> / <user@example.com>
@@ -338,6 +321,16 @@ function sanitizeTranslated(text: string, inTable: boolean): string {
 
   // 2. 表格单元格内：把半角 | 转为全角 ｜，防止破坏表格列结构
   if (inTable) t = t.replace(/\|/g, '｜');
+
+  // 3. 翻译 API 有时把方括号全角化（[ → 【，] → 】），防止这些字符
+  //    出现在本应是纯文字的翻译片段里（链接/图片/代码已整体 raw，不会出现此问题）
+  t = t.replace(/【/g, '[').replace(/】/g, ']');
+
+  // 4. 翻译 API 在处理形如 `(key)` 的文本时会把括号全角化 `（key）`，
+  //    纯文字片段中出现的括号应当保持原样（Markdown 中括号无语法含义，
+  //    但全角括号会让 README 的英文文档排版变得奇怪）
+  //    注意：URL 已经被 raw 保护，不会被翻译，此处替换不会影响链接结构
+  t = t.replace(/（/g, '(').replace(/）/g, ')');
 
   return t;
 }

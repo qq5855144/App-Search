@@ -51,7 +51,9 @@ export default function DetailScreen() {
   const [expandedRelease, setExpandedRelease] = useState<number | null>(null);
   // 翻译后的展示文本（翻译关闭时等于原文）
   const [displayDesc, setDisplayDesc] = useState('');
-  const [displayReadme, setDisplayReadme] = useState('');
+  // README 最终渲染内容（原文或翻译后），只在确定后赋值，防止 WebView 多次重载闪烁
+  const [readmeToRender, setReadmeToRender] = useState('');
+  const [readmeTranslating, setReadmeTranslating] = useState(false);
 
   useEffect(() => {
     if (!owner || !repo) return;
@@ -118,7 +120,8 @@ export default function DetailScreen() {
     if (!owner || !repo) return;
     let cancelled = false;
     setReadme('');
-    setDisplayReadme('');
+    setReadmeToRender('');
+    setReadmeTranslating(false);
     setReadmeLoading(true);
 
     (async () => {
@@ -137,21 +140,26 @@ export default function DetailScreen() {
     (async () => {
       const desc = app?.description || '';
       if (!enabled) {
+        // 翻译关闭：直接使用原文，README 一次性确定，不触发二次 WebView 重载
         if (!cancelled) {
           setDisplayDesc(desc);
-          setDisplayReadme(readme);
+          setReadmeToRender(readme);
+          setReadmeTranslating(false);
         }
         return;
       }
+      // 翻译开启：先标记"翻译中"，等翻译完成后才一次性设置 readmeToRender
+      // 这样 MarkdownSection 只接收一次稳定内容，WebView 不会因中间状态重载而闪烁
+      if (readme) setReadmeTranslating(true);
       const [td, tr] = await Promise.all([
         desc ? translate(desc) : Promise.resolve(''),
         // README 用 Markdown-aware 翻译：保护代码块/HTML 标签/URL，只翻译可读文字
-        // 避免翻译 API 把 height 译成 高度、破坏 Markdown 语法导致渲染失败
         readme ? translateMarkdown(readme, targetLang) : Promise.resolve(''),
       ]);
       if (!cancelled) {
         setDisplayDesc(td);
-        setDisplayReadme(tr);
+        setReadmeToRender(tr || readme); // 翻译失败降级原文
+        setReadmeTranslating(false);
       }
     })();
     return () => { cancelled = true; };
@@ -414,7 +422,13 @@ export default function DetailScreen() {
             <ActivityIndicator size="small" color="#0969da" style={{ marginVertical: 12 }} />
             <Text style={{ fontSize: 12, color: '#999' }}>README 加载中，不影响下载链接展示</Text>
           </View>
-        ) : ((displayReadme || readme) ? <MarkdownSection content={displayReadme || readme} owner={owner ?? ''} repo={repo ?? ''} /> : null)}
+        ) : readmeTranslating ? (
+          <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4, alignItems: 'center', gap: 10 }}>
+            <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A', alignSelf: 'flex-start' }}>README</Text>
+            <ActivityIndicator size="small" color="#0969da" style={{ marginVertical: 12 }} />
+            <Text style={{ fontSize: 12, color: '#999' }}>翻译中...</Text>
+          </View>
+        ) : (readmeToRender ? <MarkdownSection content={readmeToRender} owner={owner ?? ''} repo={repo ?? ''} /> : null)}
       </ScrollView>
     </SafeAreaView>
   );
