@@ -283,8 +283,9 @@ function splitBodyToSegments(body: string, inTable: boolean): Segment[] {
   // Markdown 图片 ![alt](url) — 整体保护
   scan(/!\[[^\]]*\]\([^)]*\)/g);
   // Markdown 链接 [text](url)
-  //   - text 含 HTML 标签（如 <img>）→ 整个链接不翻译，防止结构符号被全角化导致渲染失效
-  //   - text 为普通文字        → 只保护 ](url) 部分（含 ]、(、url、)），text 允许翻译
+  //   - text 含 HTML 标签（如 <img>）→ 整个链接不翻译
+  //   - text 为普通文字 → 保护 [ 字符本身（防止翻译 API 看到 [ 后自动配对 ] 破坏结构）
+  //                      + 保护 ](url) 部分；只翻译 text 内容
   {
     const linkRe = /\[([^\]]*)\]\(([^)]+)\)/g;
     let m: RegExpExecArray | null;
@@ -293,7 +294,9 @@ function splitBodyToSegments(body: string, inTable: boolean): Segment[] {
         // text 含 HTML 标签 → 整个链接 raw
         ranges.push([m.index, m.index + m[0].length]);
       } else {
-        // 只保护 ](url) 部分，避免 ]( 被插空格或转全角
+        // 保护 [ 字符（翻译 API 不可见，不会自动补配对的 ]）
+        ranges.push([m.index, m.index + 1]);
+        // 保护 ](url) 部分（从 ] 到末尾），避免 ]( 被插空格或转全角
         const closeStart = m.index + 1 + m[1].length; // ] 的位置
         ranges.push([closeStart, m.index + m[0].length]);
       }

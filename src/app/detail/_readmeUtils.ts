@@ -129,26 +129,16 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
     // 2. 解析相对 URL → 绝对 URL（Markdown 语法部分，HTML img 标签在 DOM 阶段修正）
     var _base = ${safeBase};
     // 2a. Markdown 行内链接 [text](relative/path)
-    raw = raw.replace(/(\\]\\()((?!https?:\\/\\/|mailto:|#|ftp:|\\/)[^)]+)(\\))/g, function(m, a, p, c) {
+    raw = raw.replace(/(\\]\\()((?!https?:\\/\\/|mailto:|#)[^)]+)(\\))/g, function(m, a, p, c) {
       return a + _base + p + c;
     });
-    // 2b. 处理翻译后可能出现的 [ text ]( url ) 结构修复
-    raw = raw.replace(/\\[\\s+([^\\]]+)\\s+\\]\\s*\\(\\s*([^\\s)]+)\\s*\\)/g, '[$1]($2)');
-    // 2c. 处理 HTML <a> 标签的相对路径
-    raw = raw.replace(/(<a[^>]+href=")((?!https?:\\/\\/|mailto:|#|ftp:|\\/)[^"]+)(")/gi, function(m, a, p, c) {
-      return a + _base + p + c;
-    });
-    // 2d. 处理 HTML <img> 标签的相对路径
-    raw = raw.replace(/(<img[^>]+src=")((?!https?:\\/\\/|data:)[^"]+)(")/gi, function(m, a, p, c) {
-      return a + _base + p + c;
-    });
-    // 2e. Markdown 图片 ![alt](relative/path)
-    raw = raw.replace(/(!\\[[^\\]]*\\]\\()((?!https?:\\/\\/|data:)[^)]+)(\\))/g, function(m, a, p, c) {
+    // 2b. Markdown 图片 ![alt](relative/path)
+    raw = raw.replace(/(!\\[[^\\]]*\\]\\()((?!https?:\\/\\/)[^)]+)(\\))/g, function(m, a, p, c) {
       return a + _base + p + c;
     });
 
     // 3. 配置 marked（GFM + 代码高亮）
-    marked.use({ gfm: true, breaks: false });
+    marked.use({ gfm: true, breaks: false, html: true });
     var renderer = new marked.Renderer();
     renderer.code = function(code, lang) {
       var language = (lang || '').split(/[\\s,]/)[0];
