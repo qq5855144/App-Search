@@ -49,11 +49,10 @@ export default function DetailScreen() {
   const [favored, setFavored] = useState(false);
   const [error, setError] = useState('');
   const [expandedRelease, setExpandedRelease] = useState<number | null>(null);
-  // 翻译后的展示文本（翻译关闭时等于原文）
+  // 翻译后的展示文本（翻译关闭时为空字符串，渲染时 fallback 到原文）
   const [displayDesc, setDisplayDesc] = useState('');
-  // README 最终渲染内容（原文或翻译后），只在确定后赋值，防止 WebView 多次重载闪烁
-  const [readmeToRender, setReadmeToRender] = useState('');
-  const [readmeTranslating, setReadmeTranslating] = useState(false);
+  // README 翻译后内容（翻译关闭/翻译前为空，渲染时 fallback 到 readme 原文）
+  const [displayReadme, setDisplayReadme] = useState('');
 
   useEffect(() => {
     if (!owner || !repo) return;
@@ -120,8 +119,7 @@ export default function DetailScreen() {
     if (!owner || !repo) return;
     let cancelled = false;
     setReadme('');
-    setReadmeToRender('');
-    setReadmeTranslating(false);
+    setDisplayReadme('');
     setReadmeLoading(true);
 
     (async () => {
@@ -134,50 +132,30 @@ export default function DetailScreen() {
     return () => { cancelled = true; };
   }, [owner, repo]);
 
-  // ── Effect A：翻译应用描述（与 README 完全解耦，避免交叉触发）
+  // 翻译：描述 + README（任一依赖变化时重新执行）
+  // 渲染始终用 (displayReadme || readme)，翻译只是可选升级，不阻塞显示
   useEffect(() => {
-    const desc = app?.description || '';
-    if (!enabled || !desc) {
-      setDisplayDesc(desc);
-      return;
-    }
     let cancelled = false;
     (async () => {
-      const td = await translate(desc);
-      if (!cancelled) setDisplayDesc(td);
-    })();
-    return () => { cancelled = true; };
-  }, [app?.description, enabled, targetLang]);
-
-  // ── Effect B：README 渲染（原文 / 翻译后）
-  // 只依赖 readme/enabled/targetLang，不依赖 app?.description。
-  // 关键策略：readme 一旦有值，立即设置 readmeToRender（原文先显示），
-  // 再异步翻译并覆盖。这样无论 context 是否异步初始化、effect 是否被
-  // cancel，README 都不会消失——最坏情况仅退化为显示原文。
-  useEffect(() => {
-    if (!readme) {
-      setReadmeToRender('');
-      setReadmeTranslating(false);
-      return;
-    }
-    // 先用原文保证 README 立即可见，翻译完成后再覆盖（降级保障）
-    setReadmeToRender(readme);
-    if (!enabled) {
-      setReadmeTranslating(false);
-      return;
-    }
-    // 翻译开启：后台翻译，完成后无缝替换，不遮盖已显示的原文
-    let cancelled = false;
-    setReadmeTranslating(true);
-    (async () => {
-      const tr = await translateMarkdown(readme, targetLang);
+      const desc = app?.description || '';
+      if (!enabled) {
+        if (!cancelled) {
+          setDisplayDesc(desc);
+          setDisplayReadme(''); // 翻译关闭时清空，渲染自动 fallback 到原文
+        }
+        return;
+      }
+      const [td, tr] = await Promise.all([
+        desc ? translate(desc) : Promise.resolve(''),
+        readme ? translateMarkdown(readme, targetLang) : Promise.resolve(''),
+      ]);
       if (!cancelled) {
-        if (tr) setReadmeToRender(tr); // 翻译成功则替换；失败时原文已显示
-        setReadmeTranslating(false);
+        setDisplayDesc(td);
+        setDisplayReadme(tr || ''); // 翻译失败保持空，渲染 fallback 到原文
       }
     })();
     return () => { cancelled = true; };
-  }, [readme, enabled, targetLang]);
+  }, [app?.description, readme, enabled, targetLang]);
 
   const toggleFav = async () => {
     if (!app) return;
@@ -429,24 +407,22 @@ export default function DetailScreen() {
           </View>
         </View>
 
-        {/* README Markdown 渲染 */}
+        {/* README Markdown 渲染：readme 加载完立即显示原文，翻译完成后无缝切换到译文 */}
         {readmeLoading ? (
           <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 4, alignItems: 'center', gap: 10 }}>
             <Text style={{ fontSize: 15, fontWeight: '700', color: '#1A1A1A', alignSelf: 'flex-start' }}>README</Text>
             <ActivityIndicator size="small" color="#0969da" style={{ marginVertical: 12 }} />
             <Text style={{ fontSize: 12, color: '#999' }}>README 加载中，不影响下载链接展示</Text>
           </View>
-        ) : readmeToRender ? (
-          <View>
-            {/* 翻译中：小提示悬浮在 README 上方，不遮挡原文，避免空白 */}
-            {readmeTranslating && (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingBottom: 4 }}>
-                <ActivityIndicator size="small" color="#0969da" />
-                <Text style={{ fontSize: 12, color: '#0969da' }}>翻译中...</Text>
-              </View>
-            )}
-            <MarkdownSection content={readmeToRender} owner={owner ?? ''} repo={repo ?? ''} />
-          </View>
+        ) : (displayReadme || readme) ? (
+          // key 变化时 MarkdownSection 重新挂载（loaded 重置为 false），
+          // WebView 从加载开始就带 loading 遮罩，用户不会看到白屏闪烁
+          <MarkdownSection
+            key={displayReadme ? 'tr' : 'orig'}
+            content={displayReadme || readme}
+            owner={owner ?? ''}
+            repo={repo ?? ''}
+          />
         ) : null}
       </ScrollView>
     </SafeAreaView>
