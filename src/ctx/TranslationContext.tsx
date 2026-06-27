@@ -29,7 +29,6 @@ const KEY_LANG = 'oas_translate_lang';
 export function TranslationProvider({ children }: { children: React.ReactNode }) {
   const [enabled, setEnabledState] = useState(false);
   const [targetLang, setTargetLangState] = useState<TargetLang>('zh');
-  const [ready, setReady] = useState(false);
 
   // 读取持久化设置
   useEffect(() => {
@@ -41,9 +40,7 @@ export function TranslationProvider({ children }: { children: React.ReactNode })
         ]);
         if (e !== null) setEnabledState(e === 'true');
         if (l === 'zh' || l === 'en') setTargetLangState(l);
-      } catch { /* 忽略 */ } finally {
-        setReady(true);
-      }
+      } catch { /* 忽略 */ }
     })();
   }, []);
 
@@ -57,10 +54,13 @@ export function TranslationProvider({ children }: { children: React.ReactNode })
     AsyncStorage.setItem(KEY_LANG, v).catch(() => {});
   }, []);
 
+  // 不在此处检查 ready：translateText 内部的 ensureCacheLoaded() 已处理缓存加载时序，
+  // 此处加 ready 守卫会引入竞争条件（ready 变化时 translate 引用更新，但调用方
+  // useEffect 若不将 translate 列入依赖，翻译 effect 不会重新执行，导致翻译不生效）
   const translate = useCallback(async (text: string): Promise<string> => {
-    if (!enabled || !ready || !text?.trim()) return text;
+    if (!enabled || !text?.trim()) return text;
     return translateText(text, targetLang);
-  }, [enabled, ready, targetLang]);
+  }, [enabled, targetLang]);
 
   return (
     <TranslationContext.Provider value={{ enabled, targetLang, setEnabled, setTargetLang, translate }}>
