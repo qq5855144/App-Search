@@ -3,6 +3,7 @@ import { getCache, setCache, HOUR, DAY, searchCacheKey } from '@/lib/cache'
 import { Platform } from 'react-native'
 
 let cachedToken: string | null = null
+const readmeInFlight = new Map<string, Promise<string>>()
 
 /** 跨平台 base64 解码（Hermes 引擎无全局 atob） */
 function base64Decode(str: string): string {
@@ -97,6 +98,56 @@ async function callEdgeFunction(body: Record<string, unknown>): Promise<any | nu
   } catch {
     return null
   }
+}
+
+function decodeReadmeContent(content: string): string {
+  const raw = base64Decode(content || '')
+  if (!raw) return ''
+  try {
+    const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0))
+    return new TextDecoder().decode(bytes)
+  } catch {
+    try {
+      return decodeURIComponent(escape(raw))
+    } catch {
+      return ''
+    }
+  }
+}
+
+async function fetchReadmeViaEdge(owner: string, repo: string): Promise<string> {
+  const data = await callEdgeFunction({
+    action: 'readme',
+    params: { owner, repo },
+    token: cachedToken,
+  })
+  return decodeReadmeContent(data?.data?.content || '')
+}
+
+async function fetchReadmeDirect(owner: string, repo: string): Promise<string> {
+  const rawBases = ['HEAD', 'main', 'master']
+  const readmeFiles = ['README.md', 'readme.md', 'Readme.md', 'README.MD']
+  const headers: Record<string, string> = {
+    Accept: 'text/plain',
+    ...(cachedToken ? { Authorization: `token ${cachedToken}` } : {}),
+  }
+
+  const attempts = rawBases.flatMap((branch) =>
+    readmeFiles.map(async (file) => {
+      try {
+        const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${file}`
+        const res = await fetch(url, { headers })
+        if (!res.ok) return ''
+        const text = await res.text()
+        return text?.trim() ? text : ''
+      } catch {
+        return ''
+      }
+    }),
+  )
+
+  const results = await Promise.all(attempts)
+  return results.find((item) => item.trim()) || ''
 }
 
 /** GitHub API 直连兜底：搜索仓库 */
@@ -635,53 +686,44 @@ export async function fetchReadme(owner: string, repo: string): Promise<string> 
   const cacheKey = `readme:${owner}/${repo}`
   const cached = await getCache<string>(cacheKey)
   if (cached !== null) return cached
+  const existing = readmeInFlight.get(cacheKey)
+  if (existing) return existing
 
-  // ── 1. 优先走 Edge Function（支持 Token 私有仓库）──────────────────────────
-  const data = await callEdgeFunction({
-    action: 'readme',
-    params: { owner, repo },
-    token: cachedToken,
-  })
-  const raw = base64Decode(data?.data?.content || '')
-  if (raw) {
-    let result = ''
-    try {
-      const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0))
-      result = new TextDecoder().decode(bytes)
-    } catch {
-      try { result = decodeURIComponent(escape(raw)) } catch { result = '' }
-    }
-    if (result) {
-      await setCache(cacheKey, result, DAY)
-      return result
-    }
-  }
+  const job = (async () => {
+    const edgePromise = fetchReadmeViaEdge(owner, repo)
+    const directPromise = fetchReadmeDirect(owner, repo)
 
-  // ── 2. Edge Function 失败：直连 raw.githubusercontent.com ──────────────────
-  // 不依赖 Supabase，公开仓库直接可用。依次尝试 HEAD / main / master
-  const rawBases = ['HEAD', 'main', 'master']
-  const readmeFiles = ['README.md', 'readme.md', 'Readme.md', 'README.MD']
-  const headers: Record<string, string> = {
-    'Accept': 'text/plain',
-    ...(cachedToken ? { Authorization: `token ${cachedToken}` } : {}),
-  }
-  for (const branch of rawBases) {
-    for (const file of readmeFiles) {
-      try {
-        const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${file}`
-        const res = await fetch(url, { headers })
-        if (res.ok) {
-          const text = await res.text()
-          if (text && text.trim()) {
-            await setCache(cacheKey, text, DAY)
-            return text
-          }
+    const result = await Promise.race([
+      Promise.any([
+        edgePromise.then((text) => {
+          if (!text.trim()) throw new Error('empty edge readme')
+          return text
+        }),
+        directPromise.then((text) => {
+          if (!text.trim()) throw new Error('empty direct readme')
+          return text
+        }),
+      ]).catch(() => ''),
+      Promise.allSettled([edgePromise, directPromise]).then((items) => {
+        for (const item of items) {
+          if (item.status === 'fulfilled' && item.value.trim()) return item.value
         }
-      } catch { /* 继续尝试 */ }
-    }
-  }
+        return ''
+      }),
+    ])
 
-  return ''
+    if (result.trim()) {
+      await setCache(cacheKey, result, DAY)
+    }
+    return result
+  })()
+
+  readmeInFlight.set(cacheKey, job)
+  try {
+    return await job
+  } finally {
+    readmeInFlight.delete(cacheKey)
+  }
 }
 
 export async function fetchContributors(owner: string, repo: string): Promise<Array<{ login: string; avatar_url: string; html_url: string }>> {

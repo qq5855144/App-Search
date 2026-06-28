@@ -3,8 +3,8 @@
  * 记录用户事件（view / download / favorite / search），并更新搜索热词。
  *
  * 关键改进：
- * 1. 批量插入 events（避免 N+1 查询）
- * 2. 批量更新 search_hot_words（在 SQL 端批量 upsert）
+ * 1. 批量 upsert events，支持客户端重试不重复记数
+ * 2. 搜索热词改由数据库 INSERT 触发器维护，避免重复上报时二次累计
  * 3. 支持单条 & 批量事件
  */
 import { createClient } from 'npm:@supabase/supabase-js@2'
@@ -41,14 +41,13 @@ Deno.serve(async (req: Request) => {
 
     // --- 1. 校验并规范化 ---
     const eventRows: any[] = []
-    const keywordStats = new Map<string, number>() // keyword -> count
-
     for (const e of eventsRaw) {
       const ev = e || {}
       const event_type = String(ev.event_type || '').toLowerCase()
       if (!VALID_EVENTS.has(event_type)) continue
 
       const row: any = {
+        client_event_id: ev.client_event_id ? String(ev.client_event_id).slice(0, 120) : null,
         app_id: ev.app_id ? Number(ev.app_id) : null,
         app_name: ev.app_name ? String(ev.app_name).slice(0, 100) : null,
         owner: ev.owner ? String(ev.owner).slice(0, 100) : null,
@@ -63,7 +62,6 @@ Deno.serve(async (req: Request) => {
       if (event_type === 'search' && ev.keyword && String(ev.keyword).trim()) {
         const kw = String(ev.keyword).trim().slice(0, 100).toLowerCase()
         row.keyword = kw
-        keywordStats.set(kw, (keywordStats.get(kw) || 0) + 1)
       }
 
       // 至少要有 app_id / owner/repo 之一，或者是 search 事件有关键词
@@ -75,7 +73,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (eventRows.length === 0) {
-      return new Response(JSON.stringify({ ok: true, inserted: 0, hot_words_updated: 0 }), {
+      return new Response(JSON.stringify({ ok: true, accepted: 0, inserted: 0, hot_words_updated: 0 }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
@@ -89,7 +87,9 @@ Deno.serve(async (req: Request) => {
         batches.push(eventRows.slice(i, i + 100))
       }
       for (const batch of batches) {
-        const { error } = await supabase.from('app_events').insert(batch)
+        const { error } = await supabase
+          .from('app_events')
+          .upsert(batch, { onConflict: 'client_event_id', ignoreDuplicates: false })
         if (!error) inserted += batch.length
         else console.warn('[track-event] insert batch failed:', error.message)
       }
@@ -97,31 +97,8 @@ Deno.serve(async (req: Request) => {
       console.warn('[track-event] insert error:', e?.message)
     }
 
-    // --- 3. 批量更新热词（一个事务内 upsert，避免 N 次循环）---
-    if (keywordStats.size > 0) {
-      try {
-        const keywordArr = Array.from(keywordStats.keys())
-        // 优先：用单个批量 RPC，一次调用解决
-        const { error: batchErr } = await supabase
-          .rpc('increment_hot_words_batch', { keywords: keywordArr })
-          .catch(() => ({ error: { message: 'batch rpc failed, fall back' } }))
-
-        if (!batchErr) return new Response(
-          JSON.stringify({ ok: true, inserted, hot_words_updated: keywordArr.length }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-        )
-
-        // 备用：对每个 keyword 调用新签名 increment_hot_word
-        for (const [kw, count] of keywordStats.entries()) {
-          await supabase.rpc('increment_hot_word', {
-            keyword_in: kw, increment_by: count,
-          }).catch(() => { /* silent: RPC 不可用时也不阻断事件写入 */ })
-        }
-      } catch { /* hot words 失败不影响事件写入的成功返回 */ }
-    }
-
     return new Response(
-      JSON.stringify({ ok: true, inserted, hot_words_updated: keywordStats.size }),
+      JSON.stringify({ ok: true, accepted: eventRows.length, inserted, hot_words_updated: 0 }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     )
   } catch (err: any) {

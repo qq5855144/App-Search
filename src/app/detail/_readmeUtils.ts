@@ -67,14 +67,22 @@ export const README_CSS = `
 `;
 
 const HEIGHT_SCRIPT = `
+  var __lastHeight = 0;
   function reportHeight() {
     var h = document.documentElement.scrollHeight || document.body.scrollHeight;
+    if (!h || Math.abs(h - __lastHeight) < 2) return;
+    __lastHeight = h;
     var msg = JSON.stringify({ type: 'height', height: h });
     if (window.ReactNativeWebView) { window.ReactNativeWebView.postMessage(msg); }
     else if (window.parent && window.parent !== window) { window.parent.postMessage(msg, '*'); }
   }
   // 阶段一：DOM 渲染完成后立即上报（文字/表格布局已确定）
   setTimeout(reportHeight, 80);
+  if (window.ResizeObserver) {
+    var ro = new ResizeObserver(function() { reportHeight(); });
+    ro.observe(document.documentElement);
+    ro.observe(document.body);
+  }
   // 阶段二：等待图片加载 —— 为每张图片绑定 onload/onerror，确保图片撑开后重报
   function bindImgListeners() {
     var imgs = document.querySelectorAll('#md img');
@@ -112,6 +120,7 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
   const safeMarkdown = JSON.stringify(markdown).replace(/<\//g, '<\\/');
 
   const safeBase = JSON.stringify(baseUrl); // 带外层双引号的 JSON 字符串
+  const needsHighlight = /(^|\n)(`{3,}|~{3,})/.test(markdown);
 
   const js = `
     // 全局错误捕获：把 WebView 内 JS 错误上报给 React Native（便于诊断）
@@ -134,6 +143,14 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
       try { return new URL(url, _base).toString(); }
       catch (e) { return url; }
     }
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
 
     // 3. 配置 marked（GFM + 代码高亮）
     marked.use({ gfm: true, breaks: false, html: true });
@@ -153,13 +170,16 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
     renderer.code = function(code, lang) {
       var language = (lang || '').split(/[\\s,]/)[0];
       var highlighted = '';
-      if (language && hljs.getLanguage(language)) {
-        try { highlighted = hljs.highlight(code, { language: language, ignoreIllegals: true }).value; }
-        catch(e) { highlighted = hljs.highlightAuto(code).value; }
-      } else {
-        highlighted = hljs.highlightAuto(code).value;
+      if (${needsHighlight ? 'true' : 'false'} && typeof hljs !== 'undefined') {
+        if (language && hljs.getLanguage(language)) {
+          try { highlighted = hljs.highlight(code, { language: language, ignoreIllegals: true }).value; }
+          catch(e) { highlighted = hljs.highlightAuto(code).value; }
+        } else {
+          highlighted = hljs.highlightAuto(code).value;
+        }
+        return '<pre><code class="hljs language-' + (language || 'plaintext') + '">' + highlighted + '</code></pre>';
       }
-      return '<pre><code class="hljs language-' + (language || 'plaintext') + '">' + highlighted + '</code></pre>';
+      return '<pre><code>' + escapeHtml(code) + '</code></pre>';
     };
 
     // 4. 先按标准 Markdown 渲染，再对 DOM 做安全增强
@@ -261,9 +281,9 @@ export function buildReadmeHtml(markdown: string, baseUrl: string, viewportWidth
     '<head>\n' +
     '<meta charset="UTF-8">\n' +
     `<meta name="viewport" content="width=${viewportWidth},initial-scale=1.0,maximum-scale=1.0,user-scalable=no">\n` +
-    '<style>\n' + HLJS_GITHUB_CSS + '\n' + README_CSS + '\n</style>\n' +
+    '<style>\n' + (needsHighlight ? HLJS_GITHUB_CSS + '\n' : '') + README_CSS + '\n</style>\n' +
     '<script>\n' + MARKED_INLINE + '\n</script>\n' +
-    '<script>\n' + HLJS_INLINE + '\n</script>\n' +
+    (needsHighlight ? '<script>\n' + HLJS_INLINE + '\n</script>\n' : '') +
     '</head>\n' +
     '<body>\n' +
     '<div id="md"></div>\n' +

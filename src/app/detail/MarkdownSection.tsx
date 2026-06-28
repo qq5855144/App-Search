@@ -1,5 +1,5 @@
 // ─── README 渲染 — WebView 方案（marked.js GFM + highlight.js 代码高亮）────────
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { View, Text, Platform, ActivityIndicator, useWindowDimensions } from 'react-native';
 import WebView, { type WebViewMessageEvent } from 'react-native-webview';
 import { buildReadmeHtml } from './_readmeUtils';
@@ -35,6 +35,10 @@ export default function MarkdownSection({ content, owner, repo }: Props) {
     () => ({ html, baseUrl: `https://github.com/${owner}/${repo}` }),
     [html, owner, repo]
   );
+
+  useEffect(() => {
+    setLoaded(false);
+  }, [html]);
 
   // postMessage 高度上报：setHeight 只增不减，且 source memoize 后不触发重载
   const onMessage = useCallback((e: WebViewMessageEvent) => {
@@ -83,7 +87,7 @@ export default function MarkdownSection({ content, owner, repo }: Props) {
           showsHorizontalScrollIndicator={false}
           originWhitelist={['*']}
           onMessage={onMessage}
-          onLoad={() => setLoaded(true)}
+          onLoadEnd={() => setLoaded(true)}
           onError={(e) => console.error('[MarkdownSection] WebView onError:', e.nativeEvent)}
           mixedContentMode="always"
           javaScriptEnabled

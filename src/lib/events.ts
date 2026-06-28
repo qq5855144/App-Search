@@ -54,7 +54,7 @@ export interface AppEvent {
 
 const IS_WEB = Platform.OS === 'web'
 const STORAGE_KEY = 'oas_events'
-const MAX_EVENTS   = 500   // keep only the latest N to avoid unbounded growth
+const MAX_EVENTS   = 5000  // keep a larger local queue to reduce ranking-event loss
 
 // ─── Web helpers (localStorage) ──────────────────────────────────────────────
 function webReadAll(): AppEvent[] {
@@ -112,6 +112,7 @@ export async function addAppEvent(event: Omit<AppEvent, 'id' | 'created_at'>): P
       all.unshift(newEvent)
       await nativeWriteAll(all.slice(0, MAX_EVENTS))
     }
+    void uploadPendingEventsToTrack().catch(() => {})
   } catch { /* never throw */ }
 }
 
@@ -301,11 +302,12 @@ export async function uploadPendingEventsToTrack(): Promise<number> {
 
     const deviceId = await getOrCreateDeviceId()
     const rows = pending.map((e) => ({
+      client_event_id: e.id,
       app_id:     e.app_id ?? 0,
       app_name:   e.app_name ?? '',
       owner:      e.owner ?? '',
       repo:       e.repo ?? '',
-      avatar_url: '',
+      avatar_url: e.avatar_url ?? '',
       event_type: e.event_type,
       keyword:    e.keyword ?? null,
       platform:   e.platform ?? null,
@@ -328,6 +330,8 @@ export async function uploadPendingEventsToTrack(): Promise<number> {
     })
 
     if (!res.ok) return 0
+    const data = await res.json().catch(() => null)
+    if (!data?.ok || typeof data.inserted !== 'number' || data.inserted < pending.length) return 0
 
     const newCursor = Math.max(...pending.map((e) => e.created_at))
     await saveUploadCursor(String(newCursor))
@@ -344,7 +348,9 @@ export async function uploadPendingEventsToTrack(): Promise<number> {
  * Uses a cursor so already-uploaded events are not re-sent.
  * Safe to call on app foreground / network reconnect.
  */
-export async function uploadPendingEvents(supabaseFunctionsInvoke: (name: string, opts: { body: unknown }) => Promise<void>): Promise<number> {
+export async function uploadPendingEvents(
+  supabaseFunctionsInvoke: (name: string, opts: { body: unknown }) => Promise<{ ok?: boolean; inserted?: number }>
+): Promise<number> {
   try {
     const all = await getAllEvents()
     if (all.length === 0) return 0
@@ -361,18 +367,23 @@ export async function uploadPendingEvents(supabaseFunctionsInvoke: (name: string
 
     const deviceId = await getOrCreateDeviceId()
     const rows = pending.map((e) => ({
+      client_event_id: e.id,
       app_id:     e.app_id ?? 0,
       app_name:   e.app_name ?? '',
       owner:      e.owner ?? '',
       repo:       e.repo ?? '',
-      avatar_url: '',
+      avatar_url: e.avatar_url ?? '',
       event_type: e.event_type,
       keyword:    e.keyword ?? null,
       platform:   e.platform ?? null,
       device_id:  deviceId,
     }))
 
-    await supabaseFunctionsInvoke('track-event', { body: { events: rows } })
+    const result = await supabaseFunctionsInvoke('track-event', { body: { events: rows } }) as unknown as {
+      ok?: boolean
+      inserted?: number
+    }
+    if (!result?.ok || typeof result.inserted !== 'number' || result.inserted < pending.length) return 0
 
     // Advance cursor to the latest uploaded event's timestamp
     const newCursor = Math.max(...pending.map((e) => e.created_at))

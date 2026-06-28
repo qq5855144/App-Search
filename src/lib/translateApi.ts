@@ -9,7 +9,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // 内存缓存：key = "to|text"
 const memCache = new Map<string, string>();
 // 升级版本号 → 旧 AsyncStorage 缓存自动废弃，强制使用新翻译逻辑重新翻译
-const STORAGE_KEY = 'oas_translate_cache_v6';
+const STORAGE_KEY = 'oas_translate_cache_v7';
+const markdownMemCache = new Map<string, string>();
+const markdownInFlight = new Map<string, Promise<string>>();
 
 /** 从 AsyncStorage 加载持久化缓存 */
 let cacheLoaded = false;
@@ -162,6 +164,8 @@ export async function translateBatch(texts: string[], to: 'zh' | 'en'): Promise<
 /** 清除翻译缓存 */
 export async function clearTranslationCache() {
   memCache.clear();
+  markdownMemCache.clear();
+  markdownInFlight.clear();
   cacheLoaded = false;
   await AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
 }
@@ -203,6 +207,65 @@ function mergeRanges(ranges: [number, number][]): [number, number][] {
     }
   }
   return merged;
+}
+
+function findClosingToken(text: string, start: number, openChar: string, closeChar: string): number {
+  if (text[start] !== openChar) return -1;
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (ch === openChar) depth++;
+    if (ch === closeChar) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function collectMarkdownLinkRanges(body: string): [number, number][] {
+  const ranges: [number, number][] = [];
+  let i = 0;
+  while (i < body.length) {
+    const hasImagePrefix = body[i] === '!' && body[i + 1] === '[';
+    const bracketStart = hasImagePrefix ? i + 1 : body[i] === '[' ? i : -1;
+    if (bracketStart === -1) {
+      i++;
+      continue;
+    }
+
+    const textEnd = findClosingToken(body, bracketStart, '[', ']');
+    if (textEnd === -1) {
+      i++;
+      continue;
+    }
+
+    const next = body[textEnd + 1];
+    if (next === '(') {
+      const urlEnd = findClosingToken(body, textEnd + 1, '(', ')');
+      if (urlEnd !== -1) {
+        ranges.push([i, urlEnd + 1]);
+        i = urlEnd + 1;
+        continue;
+      }
+    }
+
+    if (next === '[') {
+      const refEnd = findClosingToken(body, textEnd + 1, '[', ']');
+      if (refEnd !== -1) {
+        ranges.push([i, refEnd + 1]);
+        i = refEnd + 1;
+        continue;
+      }
+    }
+
+    i++;
+  }
+  return ranges;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -270,14 +333,6 @@ function splitBodyToSegments(body: string, inTable: boolean): Segment[] {
     }
   };
 
-  // ── 带链接的图片（最高优先级，必须在所有子格式之前匹配）─────────────────
-  // ① [![alt](img)](link)  — inline 图片 + inline 链接
-  scan(/\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)/g);
-  // ② [![alt][img-ref]][link-ref]  — reference 图片 + reference 链接
-  //    外层 ][link-ref] 若无此正则会漏出翻译流程，导致 link-ref 被翻译成中文 ID
-  scan(/\[!\[[^\]]*\]\[[^\]]*\]\]\[[^\]]*\]/g);
-  // ③ [![alt](img)][link-ref]  — inline 图片 + reference 链接（混合格式）
-  scan(/\[!\[[^\]]*\]\([^)]*\)\]\[[^\]]*\]/g);
   // 行内代码 `...`
   scan(/`[^`]+`/g);
   // HTML 开标签（含属性，避免 height→高度 等被翻译）
@@ -286,15 +341,9 @@ function splitBodyToSegments(body: string, inTable: boolean): Segment[] {
   scan(/<\/[a-zA-Z][^>]*>/g);
   // HTML 注释
   scan(/<!--[\s\S]*?-->/g);
-  // Markdown 图片 ![alt](url) — 整体保护
-  scan(/!\[[^\]]*\]\([^)]*\)/g);
-  // Reference-style 图片 ![alt][ref]
-  scan(/!\[[^\]]*\]\[[^\]]*\]/g);
-  // Markdown 链接 [text](url) — 整体保护
+  // Markdown 链接/图片/引用链接：用括号平衡扫描，兼容嵌套 [] 和 URL 中的 ()
   // 翻译 API 在看到链接文字时会引入 [ ]、（）等结构字符，破坏渲染；整体 raw 最安全
-  scan(/\[[^\]]*\]\([^)]*\)/g);
-  // Reference-style 链接 [text][ref] / [text][]
-  scan(/\[[^\]]+\]\[[^\]]*\]/g);
+  ranges.push(...collectMarkdownLinkRanges(body));
   // 自动链接 <https://...> / <user@example.com>
   scan(/<(https?:\/\/[^>\s]+|[^>\s]+@[^>\s]+)>/g);
   // 裸 URL（http/https）
@@ -565,82 +614,95 @@ function isStructurallyCorrupted(orig: StructCounts, translated: StructCounts): 
  */
 export async function translateMarkdown(md: string, to: 'zh' | 'en'): Promise<string> {
   if (!md?.trim()) return md;
+  const cacheKey = `markdown:${to}|${md}`;
+  const cached = markdownMemCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const inflight = markdownInFlight.get(cacheKey);
+  if (inflight) return inflight;
 
-  // 翻译前记录结构特征，用于后置校验
-  const origCounts = countStructures(md);
+  const job = (async () => {
+    // 翻译前记录结构特征，用于后置校验
+    const origCounts = countStructures(md);
 
-  try {
-    const blocks = splitToBlocks(md);
+    try {
+      const blocks = splitToBlocks(md);
 
-    // ── 第一步：对每个翻译行，剥离前缀后进行行内分段
-    type SegMapEntry = {
-      prefix: string;
-      segments: Segment[];
-    };
-    // segEntries[blockIdx] = SegMapEntry[] | null（raw 块为 null）
-    const segEntries: (SegMapEntry[] | null)[] = blocks.map(block => {
-      if (block.raw) return null;
-      return block.lines.map(line => {
-        const { prefix, body } = stripLinePrefix(line);
-        const segments = splitBodyToSegments(body, block.inTable ?? false);
-        return { prefix, segments };
-      });
-    });
-
-    // ── 第二步：收集所有需要翻译的纯文字片段
-    const toTranslateTexts: string[] = [];
-    const textIndex: Array<{ bi: number; li: number; si: number }> = [];
-
-    segEntries.forEach((entries, bi) => {
-      if (!entries) return;
-      entries.forEach((entry, li) => {
-        entry.segments.forEach((seg, si) => {
-          if (seg.translate && seg.text.trim()) {
-            textIndex.push({ bi, li, si });
-            toTranslateTexts.push(seg.text);
-          }
+      // ── 第一步：对每个翻译行，剥离前缀后进行行内分段
+      type SegMapEntry = {
+        prefix: string;
+        segments: Segment[];
+      };
+      // segEntries[blockIdx] = SegMapEntry[] | null（raw 块为 null）
+      const segEntries: (SegMapEntry[] | null)[] = blocks.map(block => {
+        if (block.raw) return null;
+        return block.lines.map(line => {
+          const { prefix, body } = stripLinePrefix(line);
+          const segments = splitBodyToSegments(body, block.inTable ?? false);
+          return { prefix, segments };
         });
       });
-    });
 
-    if (!toTranslateTexts.length) return md;
+      // ── 第二步：收集所有需要翻译的纯文字片段
+      const toTranslateTexts: string[] = [];
+      const textIndex: Array<{ bi: number; li: number; si: number }> = [];
 
-    // ── 第三步：批量翻译
-    const translated = await translateBatch(toTranslateTexts, to);
-
-    // ── 第四步：填回翻译结果，并执行后处理
-    translated.forEach((dst, idx) => {
-      const { bi, li, si } = textIndex[idx];
-      const entries = segEntries[bi];
-      if (!entries) return;
-      const seg = entries[li].segments[si];
-      const cleaned = sanitizeTranslated(dst, seg.inTable ?? false);
-      entries[li].segments[si] = { ...seg, text: cleaned };
-    });
-
-    // ── 第五步：重组
-    const resultLines: string[] = [];
-    blocks.forEach((block, bi) => {
-      const entries = segEntries[bi];
-      if (!entries) {
-        resultLines.push(...block.lines);
-      } else {
-        entries.forEach(({ prefix, segments }) => {
-          resultLines.push(prefix + segments.map(s => s.text).join(''));
+      segEntries.forEach((entries, bi) => {
+        if (!entries) return;
+        entries.forEach((entry, li) => {
+          entry.segments.forEach((seg, si) => {
+            if (seg.translate && seg.text.trim()) {
+              textIndex.push({ bi, li, si });
+              toTranslateTexts.push(seg.text);
+            }
+          });
         });
-      }
-    });
+      });
 
-    const result = resultLines.join('\n');
+      if (!toTranslateTexts.length) return md;
 
-    // ── 第六步：结构校验，损坏时回退原文
-    const translatedCounts = countStructures(result);
-    if (isStructurallyCorrupted(origCounts, translatedCounts)) {
+      // ── 第三步：批量翻译
+      const translated = await translateBatch(toTranslateTexts, to);
+
+      // ── 第四步：填回翻译结果，并执行后处理
+      translated.forEach((dst, idx) => {
+        const { bi, li, si } = textIndex[idx];
+        const entries = segEntries[bi];
+        if (!entries) return;
+        const seg = entries[li].segments[si];
+        const cleaned = sanitizeTranslated(dst, seg.inTable ?? false);
+        entries[li].segments[si] = { ...seg, text: cleaned };
+      });
+
+      // ── 第五步：重组
+      const resultLines: string[] = [];
+      blocks.forEach((block, bi) => {
+        const entries = segEntries[bi];
+        if (!entries) {
+          resultLines.push(...block.lines);
+        } else {
+          entries.forEach(({ prefix, segments }) => {
+            resultLines.push(prefix + segments.map(s => s.text).join(''));
+          });
+        }
+      });
+
+      const result = resultLines.join('\n');
+
+      // ── 第六步：结构校验，损坏时回退原文
+      const translatedCounts = countStructures(result);
+      const finalResult = isStructurallyCorrupted(origCounts, translatedCounts) ? md : result;
+      markdownMemCache.set(cacheKey, finalResult);
+      return finalResult;
+    } catch {
+      markdownMemCache.set(cacheKey, md);
       return md;
     }
+  })();
 
-    return result;
-  } catch {
-    return md;
+  markdownInFlight.set(cacheKey, job);
+  try {
+    return await job;
+  } finally {
+    markdownInFlight.delete(cacheKey);
   }
 }

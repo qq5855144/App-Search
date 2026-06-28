@@ -4,7 +4,7 @@
  * 支持：热门榜 / 下载榜 / 收藏榜 / 搜索热词  ×  周榜 / 月榜 / 总榜
  */
 import React, { useCallback, useState } from 'react';
-import { View, Text, Pressable, FlatList, ActivityIndicator, ScrollView } from 'react-native';
+import { View, Text, Pressable, FlatList, ActivityIndicator, ScrollView, Platform } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useAndroidExitBack } from '@/hooks/useAndroidExitBack';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -44,6 +44,31 @@ const PERIOD_TABS: { key: Period; label: string }[] = [
 ];
 
 const MEDAL_COLORS = ['#FFD700', '#C0C0C0', '#CD7F32'];
+const AGGREGATE_INTERVAL_MS = 5 * 60 * 1000;
+const AGGREGATE_CURSOR_KEY = 'oas_rankings_last_aggregate_at';
+
+async function readAggregateCursor(): Promise<number> {
+  if (Platform.OS === 'web') {
+    try { return Number(localStorage.getItem(AGGREGATE_CURSOR_KEY) ?? '0') || 0; } catch { return 0; }
+  }
+  try {
+    const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+    return Number((await AsyncStorage.getItem(AGGREGATE_CURSOR_KEY)) ?? '0') || 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function saveAggregateCursor(ts: number): Promise<void> {
+  if (Platform.OS === 'web') {
+    try { localStorage.setItem(AGGREGATE_CURSOR_KEY, String(ts)); } catch { /* ignore */ }
+    return;
+  }
+  try {
+    const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+    await AsyncStorage.setItem(AGGREGATE_CURSOR_KEY, String(ts));
+  } catch { /* ignore */ }
+}
 
 export default function RankingScreen() {
   useAndroidExitBack();
@@ -55,6 +80,19 @@ export default function RankingScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState('');
+
+  const maybeAggregateRankings = useCallback(async (force = false) => {
+    const lastRun = await readAggregateCursor();
+    if (!force && Date.now() - lastRun < AGGREGATE_INTERVAL_MS) return false;
+    try {
+      const { error } = await supabase.functions.invoke('aggregate-rankings', {});
+      if (error) throw error;
+      await saveAggregateCursor(Date.now());
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
 
   const loadRankings = useCallback(async (type: RankType, p: Period) => {
     setLoading(true);
@@ -86,12 +124,15 @@ export default function RankingScreen() {
     useCallback(() => {
       // 上报本地事件，然后无论是否有新事件都自动聚合一次，确保榜单始终最新
       uploadPendingEvents((name, opts) =>
-        supabase.functions.invoke(name, { body: opts.body as Record<string, unknown> }).then(() => {})
-      ).then(async () => {
-        try { await supabase.functions.invoke('aggregate-rankings', {}); } catch { /* ignore */ }
+        supabase.functions.invoke(name, { body: opts.body as Record<string, unknown> }).then(({ data, error }) => {
+          if (error) throw error;
+          return (data ?? { ok: true, inserted: 0 }) as { ok?: boolean; inserted?: number };
+        })
+      ).then(async (uploaded) => {
+        await maybeAggregateRankings(uploaded > 0);
         loadRankings(rankType, period);
       }).catch(() => { loadRankings(rankType, period); });
-    }, [loadRankings, rankType, period])
+    }, [loadRankings, maybeAggregateRankings, rankType, period])
   );
 
   const handleTabChange = (type: RankType) => {
@@ -272,11 +313,14 @@ export default function RankingScreen() {
         <View style={{ flex: 1, marginHorizontal: 16, backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden' }}>
           <FlatList
             data={items}
-            keyExtractor={(i) => String(i.app_id)}
+            keyExtractor={(i) => `${i.owner}/${i.repo}/${i.app_id}`}
             renderItem={renderItem}
             contentInsetAdjustmentBehavior="automatic"
             refreshing={refreshing}
-            onRefresh={() => { setRefreshing(true); loadRankings(rankType, period); }}
+            onRefresh={() => {
+              setRefreshing(true);
+              maybeAggregateRankings(true).finally(() => { loadRankings(rankType, period); });
+            }}
             style={{ flex: 1 }}
             contentContainerStyle={{ paddingBottom: 120 }}
           />

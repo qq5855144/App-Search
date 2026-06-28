@@ -145,6 +145,7 @@ export default function DetailScreen() {
         if (!cancelled) {
           setDisplayDesc(desc);
           setDisplayReadme(''); // 翻译关闭时清空，渲染自动 fallback 到原文
+          setTranslating(false);
         }
         return;
       }
@@ -445,10 +446,7 @@ export default function DetailScreen() {
             <Text style={{ fontSize: 12, color: '#999' }}>README 加载中，不影响下载链接展示</Text>
           </View>
         ) : (displayReadme || readme) ? (
-          // key 变化时 MarkdownSection 重新挂载（loaded 重置为 false），
-          // WebView 从加载开始就带 loading 遮罩，用户不会看到白屏闪烁
           <MarkdownSection
-            key={displayReadme ? 'tr' : 'orig'}
             content={displayReadme || readme}
             owner={owner ?? ''}
             repo={repo ?? ''}
