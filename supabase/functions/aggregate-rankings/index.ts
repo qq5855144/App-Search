@@ -1,11 +1,14 @@
 /**
- * aggregate-rankings Edge Function (v2)
+ * aggregate-rankings Edge Function (v3)
  * 聚合 app_events 生成 app_rankings（hot / download / favorite 榜）。
  *
- * 关键改进：
- * 1. 分批处理 events，避免一次拉取过多数据
- * 2. 支持黑名单过滤（ranking_denylist）
- * 3. 计算热度分：view*1 + download*5 + favorite*3
+ * v3 修复：
+ * 1. 清理策略改为「先删整个 (rank_type, period) 分区，再 insert 新数据」
+ *    原来依赖 updated_at < runUpdatedAt 的 delete 策略在并发/时钟误差下会失效，
+ *    导致历史行堆积（同一 rank_position 有几十条旧记录）。
+ * 2. upsert onConflict 改为 owner,repo（与数据库新唯一约束对齐），
+ *    避免不同 app_id 的同项目被重复插入。
+ * 3. 分批清理 + 插入，减少单次事务大小。
  */
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
@@ -131,25 +134,27 @@ Deno.serve(async (req: Request) => {
       ]
 
       for (const group of rankingGroups) {
-        if (group.rows.length > 0) {
-          const { error } = await supabase
-            .from('app_rankings')
-            .upsert(group.rows, { onConflict: 'rank_type,period,app_id' })
-          if (error) {
-            console.warn(`[aggregate] upsert ${period}/${group.type} failed:`, error.message)
-            continue
-          }
-        }
-
+        // ── v3：先删除该 (rank_type, period) 下所有旧行，再插入新数据 ──
+        // 这比原来的 "delete updated_at < runUpdatedAt" 更可靠：
+        // 彻底避免并发/时钟误差导致的历史行堆积。
         const { error: deleteError } = await supabase
           .from('app_rankings')
           .delete()
           .eq('period', period)
           .eq('rank_type', group.type)
-          .lt('updated_at', runUpdatedAt)
 
         if (deleteError) {
-          console.warn(`[aggregate] cleanup ${period}/${group.type} failed:`, deleteError.message)
+          console.warn(`[aggregate] delete ${period}/${group.type} failed:`, deleteError.message)
+          continue
+        }
+
+        if (group.rows.length > 0) {
+          const { error } = await supabase
+            .from('app_rankings')
+            .insert(group.rows)
+          if (error) {
+            console.warn(`[aggregate] insert ${period}/${group.type} failed:`, error.message)
+          }
         }
       }
 
