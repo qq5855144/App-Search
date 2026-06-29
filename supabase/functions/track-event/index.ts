@@ -1,11 +1,12 @@
 /**
- * track-event Edge Function (v2)
+ * track-event Edge Function (v3)
  * 记录用户事件（view / download / favorite / search），并更新搜索热词。
  *
- * 关键改进：
- * 1. 批量 upsert events，支持客户端重试不重复记数
- * 2. 搜索热词改由数据库 INSERT 触发器维护，避免重复上报时二次累计
- * 3. 支持单条 & 批量事件
+ * v3 修复：
+ * 1. 修复 app_id falsy 判断 bug：ev.app_id=0 原来被错误识别为 falsy → null，
+ *    导致违反数据库 NOT NULL 约束或逻辑异常；
+ *    改为 ev.app_id != null && ev.app_id !== '' 的显式非空检查。
+ * 2. owner/repo/app_name 同理，空字符串正常保留，null/undefined 才用默认值。
  */
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
@@ -48,14 +49,15 @@ Deno.serve(async (req: Request) => {
 
       const row: any = {
         client_event_id: ev.client_event_id ? String(ev.client_event_id).slice(0, 120) : null,
-        app_id: ev.app_id ? Number(ev.app_id) : null,
-        app_name: ev.app_name ? String(ev.app_name).slice(0, 100) : null,
-        owner: ev.owner ? String(ev.owner).slice(0, 100) : null,
-        repo: ev.repo ? String(ev.repo).slice(0, 100) : null,
-        avatar_url: ev.avatar_url ? String(ev.avatar_url).slice(0, 500) : null,
+        // 修复：用显式 != null 判断，避免 app_id=0 被误判为 falsy→null
+        app_id:    ev.app_id != null && ev.app_id !== '' ? Number(ev.app_id) : 0,
+        app_name:  ev.app_name != null ? String(ev.app_name).slice(0, 100) : '',
+        owner:     ev.owner != null ? String(ev.owner).slice(0, 100) : '',
+        repo:      ev.repo != null ? String(ev.repo).slice(0, 100) : '',
+        avatar_url: ev.avatar_url != null ? String(ev.avatar_url).slice(0, 500) : '',
         event_type,
-        platform: ev.platform ? String(ev.platform).slice(0, 20) : null,
-        device_id: ev.device_id ? String(ev.device_id).slice(0, 100) : null,
+        platform:  ev.platform ? String(ev.platform).slice(0, 20) : null,
+        device_id: ev.device_id ? String(ev.device_id).slice(0, 100) : '',
       }
 
       // 对于 search 事件，记录 keyword
