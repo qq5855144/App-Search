@@ -1,14 +1,20 @@
 /**
- * aggregate-rankings Edge Function (v3)
+ * aggregate-rankings Edge Function (v4)
  * 聚合 app_events 生成 app_rankings（hot / download / favorite 榜）。
  *
- * v3 修复：
- * 1. 清理策略改为「先删整个 (rank_type, period) 分区，再 insert 新数据」
- *    原来依赖 updated_at < runUpdatedAt 的 delete 策略在并发/时钟误差下会失效，
- *    导致历史行堆积（同一 rank_position 有几十条旧记录）。
- * 2. upsert onConflict 改为 owner,repo（与数据库新唯一约束对齐），
- *    避免不同 app_id 的同项目被重复插入。
- * 3. 分批清理 + 插入，减少单次事务大小。
+ * v4 质检修复：
+ * 1. 分页排序改为 id ASC（id 是自增主键，排序稳定）。
+ *    原来的 created_at DESC 在同一时刻有多条记录时排序不稳定，
+ *    导致跨页时同一记录被重复计入或漏计。
+ * 2. 写入策略改为「upsert 新行 → delete 旧行」（替代先删后插）。
+ *    先删后插有短暂空窗口期：delete 成功但 insert 失败时榜单为空。
+ *    upsert(onConflict: rank_type,period,owner,repo) + delete(updated_at < runUpdatedAt)：
+ *    - upsert 失败：旧行完整保留，榜单不为空；
+ *    - delete 失败：最坏情况是榜单多几条旧行，不为空。
+ *
+ * v3 修复（保留）：
+ * 3. UNIQUE 约束改为 (rank_type,period,owner,repo)，upsert onConflict 对齐。
+ * 4. app_id falsy 判断修复（0 不再被误判为 null）。
  */
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
@@ -61,7 +67,7 @@ Deno.serve(async (req: Request) => {
             .select('owner, repo, app_id, app_name, avatar_url')
             .gte('created_at', cutoff.toISOString())
             .eq('event_type', evType)
-            .order('created_at', { ascending: false })
+            .order('id', { ascending: true })   // v4: id 自增稳定排序，避免 created_at 相同时跨页重复计数
             .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
 
           if (error) {
@@ -134,27 +140,33 @@ Deno.serve(async (req: Request) => {
       ]
 
       for (const group of rankingGroups) {
-        // ── v3：先删除该 (rank_type, period) 下所有旧行，再插入新数据 ──
-        // 这比原来的 "delete updated_at < runUpdatedAt" 更可靠：
-        // 彻底避免并发/时钟误差导致的历史行堆积。
+        // ── v4：先 upsert 新行，再删除旧行（消除空窗口期）──
+        // upsert 基于 UNIQUE(rank_type, period, owner, repo)：
+        //   - 已存在的项目 → UPDATE（刷新排名、计数、updated_at）
+        //   - 新进榜项目  → INSERT
+        // 然后 delete updated_at < runUpdatedAt 的旧行（即不在本次榜单中的旧项目）。
+        // 优势：无论 delete 是否失败，榜单都不会为空。
+        if (group.rows.length > 0) {
+          const { error: upsertError } = await supabase
+            .from('app_rankings')
+            .upsert(group.rows, { onConflict: 'rank_type,period,owner,repo' })
+          if (upsertError) {
+            console.warn(`[aggregate] upsert ${period}/${group.type} failed:`, upsertError.message)
+            continue
+          }
+        }
+
+        // 删除不在本次榜单中的旧行（updated_at 早于本次聚合时间）
         const { error: deleteError } = await supabase
           .from('app_rankings')
           .delete()
           .eq('period', period)
           .eq('rank_type', group.type)
+          .lt('updated_at', runUpdatedAt)
 
         if (deleteError) {
-          console.warn(`[aggregate] delete ${period}/${group.type} failed:`, deleteError.message)
-          continue
-        }
-
-        if (group.rows.length > 0) {
-          const { error } = await supabase
-            .from('app_rankings')
-            .insert(group.rows)
-          if (error) {
-            console.warn(`[aggregate] insert ${period}/${group.type} failed:`, error.message)
-          }
+          // delete 失败最多导致榜单多几条旧行，不影响主要功能，仅警告
+          console.warn(`[aggregate] cleanup ${period}/${group.type} failed:`, deleteError.message)
         }
       }
 
