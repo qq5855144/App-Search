@@ -104,8 +104,10 @@ export default function RankingScreen() {
         .order('rank_position', { ascending: true })
         .limit(50);
       if (error) throw error;
-      // 过滤掉 app_id=0 或名称/owner 均为空的无效记录
-      const valid = Array.isArray(data) ? data.filter((r: any) => r.app_id > 0 || r.app_name || r.owner) : [];
+      // 严格过滤：必须同时有 owner 和 repo 才算有效记录
+      const valid = Array.isArray(data)
+        ? data.filter((r: any) => r.owner && r.repo && (r.app_id > 0 || r.app_name))
+        : [];
       setItems(valid);
       if (data && data.length > 0) {
         const ts = new Date((data[0] as any).updated_at);
@@ -200,9 +202,14 @@ export default function RankingScreen() {
           </View>
         </View>
 
-        {/* 热度分 */}
+        {/* 分数：根据榜单类型显示对应指标 */}
         <Text style={{ fontSize: 14, fontWeight: '700', color: scoreColor, marginLeft: 8 }}>
-          {item.score > 999 ? `${(item.score / 1000).toFixed(1)}k` : item.score}
+          {(() => {
+            const val = rankType === 'download' ? item.download_count
+              : rankType === 'favorite' ? item.favorite_count
+              : item.score;
+            return val > 999 ? `${(val / 1000).toFixed(1)}k` : val;
+          })()}
         </Text>
       </Pressable>
     );
@@ -309,7 +316,7 @@ export default function RankingScreen() {
         <View style={{ flex: 1, marginHorizontal: 16, backgroundColor: '#fff', borderRadius: 16, overflow: 'hidden' }}>
           <FlatList
             data={items}
-            keyExtractor={(i) => `${i.owner}/${i.repo}/${i.app_id}`}
+            keyExtractor={(i, idx) => `${i.owner || '?'}/${i.repo || '?'}-${i.app_id || idx}`}
             renderItem={renderItem}
             contentInsetAdjustmentBehavior="automatic"
             refreshing={refreshing}

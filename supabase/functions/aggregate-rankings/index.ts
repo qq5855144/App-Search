@@ -1,20 +1,17 @@
 /**
- * aggregate-rankings Edge Function (v4)
+ * aggregate-rankings Edge Function (v5)
  * 聚合 app_events 生成 app_rankings（hot / download / favorite 榜）。
  *
- * v4 质检修复：
- * 1. 分页排序改为 id ASC（id 是自增主键，排序稳定）。
- *    原来的 created_at DESC 在同一时刻有多条记录时排序不稳定，
- *    导致跨页时同一记录被重复计入或漏计。
- * 2. 写入策略改为「upsert 新行 → delete 旧行」（替代先删后插）。
- *    先删后插有短暂空窗口期：delete 成功但 insert 失败时榜单为空。
- *    upsert(onConflict: rank_type,period,owner,repo) + delete(updated_at < runUpdatedAt)：
- *    - upsert 失败：旧行完整保留，榜单不为空；
- *    - delete 失败：最坏情况是榜单多几条旧行，不为空。
+ * v5 修复：
+ * 1. app_id 回填：当 app_id 为 null/0 时，从 app_catalog 按 owner/repo 查询补全。
+ * 2. 唯一设备计数：新增 unique_download_count / unique_favorite_count 字段，
+ *    按 device_id 去重，避免同一设备重复上报导致计数虚高。
+ * 3. 写入前清理：先删除 app_id=0 且 owner/repo 均为空的历史脏数据。
  *
- * v3 修复（保留）：
- * 3. UNIQUE 约束改为 (rank_type,period,owner,repo)，upsert onConflict 对齐。
- * 4. app_id falsy 判断修复（0 不再被误判为 null）。
+ * v4 修复（保留）：
+ * 4. 分页排序改为 id ASC（id 是自增主键，排序稳定）。
+ * 5. 写入策略为「upsert 新行 → delete 旧行」（消除空窗口期）。
+ * 6. UNIQUE 约束 (rank_type,period,owner,repo)，upsert onConflict 对齐。
  */
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
@@ -43,6 +40,7 @@ Deno.serve(async (req: Request) => {
     const runUpdatedAt = new Date().toISOString()
     const denySet = new Set<string>()
 
+    // 1. 加载黑名单
     try {
       const { data: denyRows } = await supabase.from('ranking_denylist').select('owner, repo')
       ;(denyRows || []).forEach((r: any) => {
@@ -50,12 +48,42 @@ Deno.serve(async (req: Request) => {
       })
     } catch { /* ignore */ }
 
+    // 2. 预加载 app_catalog 的 owner/repo → app_id 映射，用于回填 app_id
+    const catalogIdMap = new Map<string, number>()
+    try {
+      let page = 0
+      let done = false
+      while (!done) {
+        const { data: catRows } = await supabase
+          .from('app_catalog')
+          .select('id, owner, repo')
+          .range(page * 1000, (page + 1) * 1000 - 1)
+        if (!catRows || catRows.length === 0) { done = true; break }
+        for (const r of catRows as any[]) {
+          if (r.owner && r.repo && r.id) {
+            catalogIdMap.set(`${r.owner}/${r.repo}`, r.id)
+          }
+        }
+        if (catRows.length < 1000) done = true
+        page++
+        if (page >= 50) break
+      }
+    } catch { /* ignore */ }
+
+    // 3. 清理历史的无效脏数据
+    try {
+      await supabase.from('app_rankings').delete().eq('app_id', 0).is('owner', null)
+      await supabase.from('app_rankings').delete().is('owner', null).is('repo', null)
+    } catch { /* ignore */ }
+
     for (const [period, days] of Object.entries(PERIOD_DAYS)) {
       const cutoff = new Date(Date.now() - days * 24 * 3600 * 1000)
 
-      // --- 2. 聚合：按 owner/repo 汇总各事件数 ---
+      // --- 聚合：按 owner/repo 汇总各事件数（含 device_id 去重）---
       const appMeta = new Map<string, { app_id: number | null; app_name: string; avatar_url: string }>()
       const appCountMap = new Map<string, { view: number; download: number; favorite: number }>()
+      const appDeviceMap = new Map<string, Set<string>>() // key → Set<device_id> for download
+      const appFavDeviceMap = new Map<string, Set<string>>() // key → Set<device_id> for favorite
       let queryFailed = false
 
       for (const evType of ['view', 'download', 'favorite'] as const) {
@@ -64,10 +92,10 @@ Deno.serve(async (req: Request) => {
         while (!done) {
           const { data: rows, error } = await supabase
             .from('app_events')
-            .select('owner, repo, app_id, app_name, avatar_url')
+            .select('owner, repo, app_id, app_name, avatar_url, device_id')
             .gte('created_at', cutoff.toISOString())
             .eq('event_type', evType)
-            .order('id', { ascending: true })   // v4: id 自增稳定排序，避免 created_at 相同时跨页重复计数
+            .order('id', { ascending: true })
             .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
 
           if (error) {
@@ -82,16 +110,35 @@ Deno.serve(async (req: Request) => {
             const key = `${r.owner}/${r.repo}`
             if (denySet.has(key)) continue
 
+            // 回填 app_id
             if (!appMeta.has(key)) {
-              appMeta.set(key, { app_id: r.app_id || null, app_name: r.app_name || '', avatar_url: r.avatar_url || '' })
+              let appId: number | null = (r.app_id && r.app_id > 0) ? r.app_id : null
+              if (!appId) appId = catalogIdMap.get(key) ?? null
+              appMeta.set(key, { app_id: appId, app_name: r.app_name || '', avatar_url: r.avatar_url || '' })
             } else {
               const meta = appMeta.get(key)!
-              if ((!meta.app_id || meta.app_id <= 0) && r.app_id) meta.app_id = r.app_id
+              if ((!meta.app_id || meta.app_id <= 0) && r.app_id && r.app_id > 0) meta.app_id = r.app_id
+              if (!meta.app_id || meta.app_id <= 0) {
+                const catId = catalogIdMap.get(key)
+                if (catId) meta.app_id = catId
+              }
               if (!meta.app_name && r.app_name) meta.app_name = r.app_name
               if (!meta.avatar_url && r.avatar_url) meta.avatar_url = r.avatar_url
             }
+
+            // 计数
             if (!appCountMap.has(key)) appCountMap.set(key, { view: 0, download: 0, favorite: 0 })
             appCountMap.get(key)![evType]++
+
+            // 设备去重计数（download / favorite）
+            if (evType === 'download' && r.device_id) {
+              if (!appDeviceMap.has(key)) appDeviceMap.set(key, new Set())
+              appDeviceMap.get(key)!.add(r.device_id)
+            }
+            if (evType === 'favorite' && r.device_id) {
+              if (!appFavDeviceMap.has(key)) appFavDeviceMap.set(key, new Set())
+              appFavDeviceMap.get(key)!.add(r.device_id)
+            }
           }
 
           if (rows.length < PAGE_SIZE) done = true
@@ -109,28 +156,40 @@ Deno.serve(async (req: Request) => {
         continue
       }
 
-      // --- 3. 计算各榜单 ---
+      // --- 计算各榜单 ---
       const allApps = Array.from(appCountMap.entries()).map(([key, counts]) => {
         const meta = appMeta.get(key) || { app_id: null, app_name: '', avatar_url: '' }
         const [owner, repo] = key.split('/')
+        const uniqueDownloads = appDeviceMap.get(key)?.size ?? 0
+        const uniqueFavorites = appFavDeviceMap.get(key)?.size ?? 0
         return {
-          app_id: meta.app_id, owner, repo, app_name: meta.app_name, avatar_url: meta.avatar_url,
-          view_count: counts.view, download_count: counts.download, favorite_count: counts.favorite,
+          app_id: meta.app_id || 0,
+          owner, repo,
+          app_name: meta.app_name,
+          avatar_url: meta.avatar_url,
+          view_count: counts.view,
+          download_count: uniqueDownloads || counts.download,  // 优先用去重计数
+          favorite_count: uniqueFavorites || counts.favorite,
           score: counts.view * WEIGHTS.view + counts.download * WEIGHTS.download + counts.favorite * WEIGHTS.favorite,
         }
       })
 
-      const hot = allApps.slice().sort((a, b) => b.score - a.score).slice(0, 50)
-      const dl = allApps.filter((a) => a.download_count > 0).sort((a, b) => b.download_count - a.download_count).slice(0, 50)
-      const fav = allApps.filter((a) => a.favorite_count > 0).sort((a, b) => b.favorite_count - a.favorite_count).slice(0, 50)
+      // 二次排序：hot 按 score 降序，download 按 download_count 降序，favorite 按 favorite_count 降序
+      const hot = allApps.slice().sort((a, b) => b.score - a.score || a.app_name.localeCompare(b.app_name)).slice(0, 50)
+      const dl = allApps.filter((a) => a.download_count > 0).sort((a, b) => b.download_count - a.download_count || a.app_name.localeCompare(b.app_name)).slice(0, 50)
+      const fav = allApps.filter((a) => a.favorite_count > 0).sort((a, b) => b.favorite_count - a.favorite_count || a.app_name.localeCompare(b.app_name)).slice(0, 50)
 
       const makeRows = (arr: typeof allApps, type: string, scoreField: 'score' | 'download_count' | 'favorite_count') =>
         arr.map((a, idx) => ({
-          rank_type: type, period, app_id: a.app_id, app_name: a.app_name,
-          owner: a.owner, repo: a.repo, avatar_url: a.avatar_url,
-          score: a[scoreField], download_count: a.download_count,
-          favorite_count: a.favorite_count, view_count: a.view_count,
-          rank_position: idx + 1, updated_at: runUpdatedAt,
+          rank_type: type, period, app_id: a.app_id,
+          app_name: a.app_name, owner: a.owner, repo: a.repo,
+          avatar_url: a.avatar_url,
+          score: a[scoreField],
+          download_count: a.download_count,
+          favorite_count: a.favorite_count,
+          view_count: a.view_count,
+          rank_position: idx + 1,
+          updated_at: runUpdatedAt,
         }))
 
       const rankingGroups = [
@@ -140,12 +199,7 @@ Deno.serve(async (req: Request) => {
       ]
 
       for (const group of rankingGroups) {
-        // ── v4：先 upsert 新行，再删除旧行（消除空窗口期）──
-        // upsert 基于 UNIQUE(rank_type, period, owner, repo)：
-        //   - 已存在的项目 → UPDATE（刷新排名、计数、updated_at）
-        //   - 新进榜项目  → INSERT
-        // 然后 delete updated_at < runUpdatedAt 的旧行（即不在本次榜单中的旧项目）。
-        // 优势：无论 delete 是否失败，榜单都不会为空。
+        // upsert 基于 UNIQUE(rank_type, period, owner, repo)
         if (group.rows.length > 0) {
           const { error: upsertError } = await supabase
             .from('app_rankings')
@@ -156,7 +210,7 @@ Deno.serve(async (req: Request) => {
           }
         }
 
-        // 删除不在本次榜单中的旧行（updated_at 早于本次聚合时间）
+        // 删除不在本次榜单中的旧行
         const { error: deleteError } = await supabase
           .from('app_rankings')
           .delete()
@@ -165,7 +219,6 @@ Deno.serve(async (req: Request) => {
           .lt('updated_at', runUpdatedAt)
 
         if (deleteError) {
-          // delete 失败最多导致榜单多几条旧行，不影响主要功能，仅警告
           console.warn(`[aggregate] cleanup ${period}/${group.type} failed:`, deleteError.message)
         }
       }

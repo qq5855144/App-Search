@@ -82,6 +82,7 @@ Deno.serve(async (req: Request) => {
 
     // --- 2. 批量插入 events ---
     let inserted = 0
+    let hotWordsUpdated = 0
     try {
       // 分批插入（避免单次请求过大）
       const batches: any[][] = []
@@ -92,7 +93,11 @@ Deno.serve(async (req: Request) => {
         const { error } = await supabase
           .from('app_events')
           .upsert(batch, { onConflict: 'client_event_id', ignoreDuplicates: false })
-        if (!error) inserted += batch.length
+        if (!error) {
+          inserted += batch.length
+          // 统计 search 事件数量，用于 hot_words_updated 计数
+          hotWordsUpdated += batch.filter((r: any) => r.event_type === 'search' && r.keyword).length
+        }
         else console.warn('[track-event] insert batch failed:', error.message)
       }
     } catch (e: any) {
@@ -100,7 +105,7 @@ Deno.serve(async (req: Request) => {
     }
 
     return new Response(
-      JSON.stringify({ ok: true, accepted: eventRows.length, inserted, hot_words_updated: 0 }),
+      JSON.stringify({ ok: true, accepted: eventRows.length, inserted, hot_words_updated: hotWordsUpdated }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     )
   } catch (err: any) {
