@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, TextInput, Pressable, FlatList,
   ScrollView, ActivityIndicator, Modal,
@@ -90,6 +90,8 @@ export default function SearchTab() {
   const [results, setResults] = useState<AppItem[]>([]);
   // id → 翻译后 description（批量翻译后填充）
   const [descMap, setDescMap] = useState<Map<number, string>>(new Map());
+  // 已翻译 id 集合，避免重复请求（加载更多时不重翻已有条目）
+  const translatedIdsRef = useRef<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState('');
@@ -127,6 +129,40 @@ export default function SearchTab() {
     loadHistory();
     loadHotWords();
   }, [loadHistory, loadHotWords]));
+
+  // ── 批量翻译：监听 results / 翻译开关 / 目标语言变化 ─────────────────────────
+  // 独立 effect 避免 useCallback 闭包陷阱（performSearch 的依赖数组不含翻译状态）
+  useEffect(() => {
+    if (!translateEnabled || !results.length) return;
+
+    // 找出本次还没翻译过的条目（加载更多时跳过已翻译）
+    const pending = results.filter(
+      (a) => !translatedIdsRef.current.has(a.id) && a.description,
+    );
+    if (!pending.length) return;
+
+    const descs = pending.map((a) => a.description || '');
+    translateBatch(descs, targetLang)
+      .then((translated) => {
+        pending.forEach((a) => translatedIdsRef.current.add(a.id));
+        setDescMap((prev) => {
+          const next = new Map(prev);
+          pending.forEach((a, i) => {
+            next.set(a.id, translated[i] ?? a.description ?? '');
+          });
+          return next;
+        });
+      })
+      .catch(() => {});
+  }, [results, translateEnabled, targetLang]);
+
+  // 翻译关闭时清空缓存，使 AppCard 回退到原文
+  useEffect(() => {
+    if (!translateEnabled) {
+      setDescMap(new Map());
+      translatedIdsRef.current = new Set();
+    }
+  }, [translateEnabled]);
 
   // ── 执行搜索 ────────────────────────────────────────────────────────────────
   const performSearch = useCallback(async (
@@ -195,18 +231,6 @@ export default function SearchTab() {
         setResults(items);
       }
 
-      // 批量翻译描述，消除逐条闪烁
-      if (translateEnabled && items.length) {
-        const descs = items.map((a) => a.description || '');
-        translateBatch(descs, targetLang).then((translated) => {
-          setDescMap((prev) => {
-            const next = new Map(prev);
-            items.forEach((a, i) => { next.set(a.id, translated[i] ?? a.description ?? ''); });
-            return next;
-          });
-        }).catch(() => {});
-      }
-
       loadHotWords();
     } catch (e: any) {
       if (searchIdRef.current !== thisSearchId) return;
@@ -239,6 +263,8 @@ export default function SearchTab() {
     setInputValue('');
     setSearched(false);
     setResults([]);
+    setDescMap(new Map());
+    translatedIdsRef.current = new Set();
     setError('');
     setPage(1);
     setHasMore(false);
