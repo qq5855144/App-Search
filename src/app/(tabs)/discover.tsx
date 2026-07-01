@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, FlatList, ActivityIndicator, ScrollView } from 'react-native';
 import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useAndroidExitBack } from '@/hooks/useAndroidExitBack';
@@ -45,6 +45,8 @@ export default function DiscoverTab() {
   const [apps,        setApps]        = useState<AppItem[]>([]);
   // id → 翻译后的 description（批量翻译完成后填充）
   const [descMap,     setDescMap]     = useState<Map<number, string>>(new Map());
+  // 已翻译 id 集合，避免加载更多时重复翻译已有条目
+  const translatedIdsRef = useRef<Set<number>>(new Set());
   const [loading,     setLoading]     = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing,  setRefreshing]  = useState(false);
@@ -92,18 +94,6 @@ export default function DiscoverTab() {
       else setApps((prev) => [...prev, ...items]);
       pageRef.current = pageNum;
       setHasMore(items.length === 20);
-
-      // 批量翻译描述：翻译已开启时，加载完数据后一次性翻译全部，消除逐条闪烁
-      if (translateEnabled && items.length) {
-        const descs = items.map((a) => a.description || '');
-        translateBatch(descs, targetLang).then((translated) => {
-          setDescMap((prev) => {
-            const next = new Map(prev);
-            items.forEach((a, i) => { next.set(a.id, translated[i] ?? a.description ?? ''); });
-            return next;
-          });
-        }).catch(() => {});
-      }
     } catch (e: any) {
       setError(e?.message || '加载失败，请检查网络后重试');
     } finally {
@@ -115,12 +105,48 @@ export default function DiscoverTab() {
     }
   }, [platform, categoryKey, language, starsKey, installFilter, sort]);
 
+  // ── 批量翻译：独立 effect，避免 loadData 闭包陷阱 ────────────────────────────
+  // loadData 的 useCallback 依赖不含 translateEnabled/targetLang，
+  // 若把翻译逻辑写在 loadData 内部，开关翻译后永远读到旧的 false 值。
+  // 改为独立 effect 监听 apps / translateEnabled / targetLang，每次变化时
+  // 只翻译尚未翻译的条目（translatedIdsRef 追踪），加载更多不重复翻译。
+  useEffect(() => {
+    if (!translateEnabled || !apps.length) return;
+    const pending = apps.filter(
+      (a) => !translatedIdsRef.current.has(a.id) && a.description,
+    );
+    if (!pending.length) return;
+
+    const descs = pending.map((a) => a.description || '');
+    translateBatch(descs, targetLang)
+      .then((translated) => {
+        pending.forEach((a) => translatedIdsRef.current.add(a.id));
+        setDescMap((prev) => {
+          const next = new Map(prev);
+          pending.forEach((a, i) => {
+            next.set(a.id, translated[i] ?? a.description ?? '');
+          });
+          return next;
+        });
+      })
+      .catch(() => {});
+  }, [apps, translateEnabled, targetLang]);
+
+  // 翻译关闭时清空 descMap，AppCard 自动回退到原文
+  useEffect(() => {
+    if (!translateEnabled) {
+      setDescMap(new Map());
+      translatedIdsRef.current = new Set();
+    }
+  }, [translateEnabled]);
+
   const handleClearCacheAndReload = async () => {
     await clearAllCache();
     lastLoadedAtRef.current = 0;
     pageRef.current = 1;
     setApps([]);
     setDescMap(new Map());
+    translatedIdsRef.current = new Set();
     setHasMore(false);
     loadData(1, false);
   };
@@ -167,6 +193,8 @@ export default function DiscoverTab() {
     setStarsKey(sk); setInstallFilter(inst); setSort(s);
     pageRef.current = 1;
     setApps([]);
+    setDescMap(new Map());
+    translatedIdsRef.current = new Set();
     setHasMore(false);
     loadData(1, false, p, catKey, lang, sk, inst, s);
   };
