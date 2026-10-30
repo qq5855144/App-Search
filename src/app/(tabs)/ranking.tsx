@@ -83,6 +83,9 @@ export default function RankingScreen() {
             <Text style={{ fontSize: 10, color: '#999' }}>★ {formatCount(item.stars)}</Text>
             <Text style={{ fontSize: 10, color: '#999' }}>⑂ {formatCount(item.forks)}</Text>
           </View>
+          <Text style={{ fontSize: 9, color: '#B0B4BC' }} numberOfLines={1}>
+            {item.source} · {Number.isNaN(new Date(item.updated_at).getTime()) ? '时间未知' : new Date(item.updated_at).toLocaleDateString('zh-CN')}
+          </Text>
         </View>
         <Text style={{ fontSize: 14, fontWeight: '700', color: rankType === 'growth' ? '#1677FF' : '#FF4D4F', marginLeft: 8 }}>
           {rankType === 'growth' ? `+${formatCount(metric)}` : formatCount(metric)}
