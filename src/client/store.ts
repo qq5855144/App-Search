@@ -1,318 +1,46 @@
-import { supabase } from './supabase';
-import type { AppItem } from '@/types';
+import type { AppItem } from '@/types'
+import { searchRepos, fetchRepoDetail } from '@/lib/github'
+import { getSearchHistory } from '@/lib/database'
 
-/**
- * 热搜词：前端搜索页统一入口
- *
- * 逻辑：
- *  1. 优先通过 get_hot_keywords RPC 读取（返回 [{keyword, cnt}]）
- *  2. RPC 失败或返回空 → 返回空数组，调用方可用本地历史兜底
- *  3. 做了简单客户端缓存（5 分钟），避免频繁 RPC 调用
- */
-let _hotCache: { words: string[]; at: number } | null = null;
-const HOT_CACHE_TTL = 5 * 60 * 1000;
+let hotCache: { words: string[]; at: number } | null = null
+const HOT_CACHE_TTL = 5 * 60 * 1000
 
 export async function getHotWords(limit = 20): Promise<string[]> {
-  const now = Date.now();
-  if (_hotCache && now - _hotCache.at < HOT_CACHE_TTL) {
-    return _hotCache.words.slice(0, limit);
-  }
-
-  try {
-    const { data, error } = await supabase
-      .rpc('get_hot_keywords', { limit_n: Math.min(limit, 100) })
-
-    if (error || !Array.isArray(data) || data.length === 0) {
-      _hotCache = { words: [], at: now };
-      return [];
-    }
-
-    const words = (data as { keyword: string; cnt?: number }[])
-      .map((r) => r.keyword)
-      .filter((k) => k && k.length >= 2 && k.length <= 50)
-      .slice(0, limit);
-
-    _hotCache = { words, at: now };
-    return words;
-  } catch {
-    _hotCache = { words: [], at: now };
-    return [];
-  }
+  if (hotCache && Date.now() - hotCache.at < HOT_CACHE_TTL) return hotCache.words.slice(0, limit)
+  const history = await getSearchHistory()
+  const words = [...new Set(history.map(v => v.trim()).filter(v => v.length >= 2 && v.length <= 50))]
+  hotCache = { words, at: Date.now() }
+  return words.slice(0, limit)
 }
+export function clearHotWordsCache() { hotCache = null }
 
-export function clearHotWordsCache() { _hotCache = null; }
-
-/**
- * 将数据库行转换为 AppItem
- * 统一转换逻辑，消除各页面的重复代码
- */
-function rowToAppItem(r: any): AppItem {
-  if (!r) return {} as AppItem;
-  return {
-    id: r.id,
-    full_name: r.full_name,
-    name: r.name,
-    description: r.description,
-    owner: r.owner,
-    repo: r.repo,
-    avatar_url: r.avatar_url || '',
-    stars: r.stars || 0,
-    forks: r.forks || 0,
-    language: r.language,
-    topics: r.topics || [],
-    platforms: r.platforms || [],
-    latest_version: r.latest_version,
-    latest_release_date: r.latest_release_date,
-    html_url: r.html_url || `https://github.com/${r.owner}/${r.repo}`,
-    updated_at: r.updated_at || '',
-    license: r.license,
-    archived: r.archived || false,
-    open_issues_count: r.open_issues_count || 0,
-    total_downloads: r.total_downloads || 0,
-    has_installable_assets: true,
-  };
-}
-
-/**
- * 查询参数（统一接口）
- */
 export interface CatalogQuery {
-  platform?: string;               // 'Android' | 'iOS' | 'Windows' | 'macOS' | 'Linux' | '全平台'
-  topic?: string;                  // 单 topic（兼容旧调用）
-  topics?: string[];               // 多 topic OR 匹配
-  language?: string;               // 编程语言，如 'TypeScript' | 'Kotlin'
-  min_stars?: number;              // 最低 star 数
-  has_installable_assets?: boolean;// 是否只返回有安装包的项目（默认 true）
-  sort?: 'stars' | 'updated' | 'forks' | 'downloads';
-  page?: number;
-  per_page?: number;
-  q?: string;                      // 全文搜索词
+  platform?: string; topic?: string; topics?: string[]; language?: string; min_stars?: number
+  has_installable_assets?: boolean; sort?: 'stars' | 'updated' | 'forks' | 'downloads'
+  page?: number; per_page?: number; q?: string
 }
+export interface CatalogResult { items: AppItem[]; total_count: number; server_total?: number; error?: string }
 
-export interface CatalogResult {
-  items: AppItem[];
-  total_count: number;
-  server_total?: number;           // 服务端命中总数（区别于分页总数）
-  error?: string;
-}
-
-/**
- * 核心：从 app_catalog 查询应用列表
- * 
- * 特点：
- * 1. 统一查询入口，所有页面共用
- * 2. 只返回有安装包的项目 (latest_version IS NOT NULL)
- * 3. 过滤已归档项目
- * 4. 添加调试日志便于排查
- */
 export async function queryCatalog(opts: CatalogQuery): Promise<CatalogResult> {
-  const {
-    platform,
-    topic,
-    topics,
-    language,
-    min_stars,
-    has_installable_assets = true,
-    sort = 'stars',
-    page = 1,
-    per_page = 20,
-    q = '',
-  } = opts;
-
-  const offset = (page - 1) * per_page;
-
-  // === 1. 基础查询 ===
-  let query = supabase
-    .from('app_catalog')
-    .select('*', { count: 'exact' })
-    .eq('archived', false);
-
-  // 安装包过滤（默认开启）
-  if (has_installable_assets !== false) {
-    query = query.not('latest_version', 'is', null);
-  }
-
-  // === 2. 平台过滤 ===
-  if (platform && platform !== '全平台') {
-    query = query.contains('platforms', [platform]);
-  }
-
-  // === 3. 编程语言过滤 ===
-  if (language && language !== '全部') {
-    query = query.ilike('language', language);
-  }
-
-  // === 4. 最低 star 数 ===
-  if (typeof min_stars === 'number' && min_stars > 0) {
-    query = query.gte('stars', min_stars);
-  }
-
-  // === 5. Topic 过滤：数组 OR 或单值兼容 ===
-  const topicList: string[] = Array.isArray(topics) && topics.length > 0
-    ? topics
-    : topic ? [topic] : [];
-
-  if (topicList.length === 1) {
-    query = query.contains('topics', [topicList[0]]);
-  } else if (topicList.length > 1) {
-    const orClauses = topicList.map((t) => `topics.cs.{${t}}`).join(',');
-    query = query.or(orClauses);
-  }
-
-  // === 6. 全文搜索 ===
-  if (q && q.trim()) {
-    const safeTerm = q.trim().replace(/'/g, "''");
-    query = query.or(
-      `name.ilike.%${safeTerm}%,repo.ilike.%${safeTerm}%,full_name.ilike.%${safeTerm}%,description.ilike.%${safeTerm}%,owner.ilike.%${safeTerm}%`
-    );
-  }
-
-  // === 7. 排序 ===
-  const sortMap: Record<string, string> = {
-    stars: 'stars',
-    updated: 'updated_at',
-    forks: 'forks',
-    downloads: 'total_downloads',
-  };
-  query = query.order(sortMap[sort] || 'stars', { ascending: false });
-
-  // === 8. 分页 ===
-  query = query.range(offset, offset + per_page - 1);
-
-  // === 9. 执行 ===
+  const qualifiers = [
+    opts.platform && opts.platform !== '全平台' ? `topic:${opts.platform.toLowerCase()}` : '',
+    opts.language && opts.language !== '全部' ? `language:${opts.language}` : '',
+    opts.min_stars ? `stars:>=${opts.min_stars}` : '',
+    ...(opts.topics || (opts.topic ? [opts.topic] : [])).map(t => `topic:${t}`),
+  ].filter(Boolean)
+  const q = [opts.q?.trim(), ...qualifiers].filter(Boolean).join(' ') || 'stars:>0'
   try {
-    const { data, error, count } = await query;
-    if (error) {
-      console.error('[Catalog] Query ERROR:', error.message, error.code);
-      return { items: [], total_count: 0, error: error.message };
-    }
-    const items = (data || []).map(rowToAppItem);
-    return { items, total_count: count || 0, server_total: count || 0 };
-  } catch (e: any) {
-    console.error('[Catalog] Unexpected ERROR:', e?.message || e);
-    return { items: [], total_count: 0, error: e?.message || '查询失败' };
-  }
+    const result = await searchRepos(q, { sort: opts.sort || 'stars', page: opts.page || 1, per_page: opts.per_page || 20, installableOnly: opts.has_installable_assets !== false })
+    return { ...result, server_total: result.total_count }
+  } catch (e: any) { return { items: [], total_count: 0, error: e?.message || 'GitHub 搜索失败' } }
 }
-
-/**
- * 便捷函数：获取热门应用
- */
-export async function getPopularApps(limit = 20): Promise<CatalogResult> {
-  return queryCatalog({ sort: 'stars', page: 1, per_page: limit });
-}
-
-/**
- * 便捷函数：获取最新更新的应用
- */
-export async function getLatestApps(limit = 20): Promise<CatalogResult> {
-  return queryCatalog({ sort: 'updated', page: 1, per_page: limit });
-}
-
-/**
- * 便捷函数：全文搜索
- */
-export async function searchApps(keyword: string, limit = 30): Promise<CatalogResult> {
-  return queryCatalog({ q: keyword, page: 1, per_page: limit });
-}
-
-/**
- * 获取应用总数（用于显示统计信息）
- */
-export async function getCatalogCount(): Promise<number> {
-  try {
-    const { count, error } = await supabase
-      .from('app_catalog')
-      .select('*', { count: 'exact', head: true })
-      .not('latest_version', 'is', null)
-      .eq('archived', false);
-
-    if (error) {
-      console.error('[Catalog] Count ERROR:', error.message);
-      return 0;
-    }
-    return count || 0;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * 获取所有唯一的平台列表
- */
-export async function getPlatformList(): Promise<string[]> {
-  try {
-    const { data } = await supabase
-      .from('app_catalog')
-      .select('platforms')
-      .not('latest_version', 'is', null)
-      .eq('archived', false);
-
-    const allPlatforms = new Set<string>();
-    (data || []).forEach((row: any) => {
-      (row.platforms || []).forEach((p: string) => allPlatforms.add(p));
-    });
-    return Array.from(allPlatforms).sort();
-  } catch {
-    return [];
-  }
-}
-
-/**
- * 获取所有唯一的 topic 列表
- */
-export async function getTopicList(): Promise<string[]> {
-  try {
-    const { data } = await supabase
-      .from('app_catalog')
-      .select('topics')
-      .not('latest_version', 'is', null)
-      .eq('archived', false);
-
-    const allTopics = new Set<string>();
-    (data || []).forEach((row: any) => {
-      (row.topics || []).forEach((t: string) => allTopics.add(t));
-    });
-    return Array.from(allTopics).sort();
-  } catch {
-    return [];
-  }
-}
-
-/**
- * 通过 owner/repo 获取单个应用详情
- */
+export async function getPopularApps(limit = 20) { return queryCatalog({ sort: 'stars', page: 1, per_page: limit }) }
+export async function getLatestApps(limit = 20) { return queryCatalog({ sort: 'updated', page: 1, per_page: limit }) }
+export async function searchApps(keyword: string, limit = 30) { return queryCatalog({ q: keyword, page: 1, per_page: limit }) }
+export async function getCatalogCount(): Promise<number> { return 0 }
+export async function getPlatformList(): Promise<string[]> { return ['Android','iOS','Windows','macOS','Linux'] }
+export async function getTopicList(): Promise<string[]> { return [] }
 export async function getAppByOwnerRepo(owner: string, repo: string): Promise<AppItem | null> {
-  try {
-    const { data } = await supabase
-      .from('app_catalog')
-      .select('*')
-      .eq('owner', owner)
-      .eq('repo', repo)
-      .limit(1);
-
-    if (!data || data.length === 0) return null;
-    return rowToAppItem(data[0]);
-  } catch (e: any) {
-    console.error('[Catalog] getAppByOwnerRepo ERROR:', e?.message);
-    return null;
-  }
+  try { return await fetchRepoDetail(owner, repo) } catch { return null }
 }
-
-/**
- * 通过 id 获取单个应用详情
- */
-export async function getAppById(id: number): Promise<AppItem | null> {
-  try {
-    const { data } = await supabase
-      .from('app_catalog')
-      .select('*')
-      .eq('id', id)
-      .limit(1);
-
-    if (!data || data.length === 0) return null;
-    return rowToAppItem(data[0]);
-  } catch (e: any) {
-    console.error('[Catalog] getAppById ERROR:', e?.message);
-    return null;
-  }
-}
+export async function getAppById(_id: number): Promise<AppItem | null> { return null }
