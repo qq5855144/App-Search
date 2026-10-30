@@ -211,7 +211,7 @@ async function _fetchSearchRepos(
  * - 只对未知的 repo 调用 check_installable_batch
  * - 失败或超时时返回已知缓存结果，通过 timedOut 标记告知调用方
  */
-export async function enrichApps(items: AppItem[]): Promise<{ items: AppItem[]; timedOut: boolean }> {
+export async function enrichApps(items: AppItem[], _timeoutMs = 8000): Promise<{ items: AppItem[]; timedOut: boolean }> {
   if (!items.length) return { items, timedOut: false }
   const status = await Promise.all(items.map(app => getInstallableStatus(app.owner, app.repo)))
   const enriched = items.map((app, index) => status[index] === true ? { ...app, has_installable_assets: true } : app)
@@ -394,7 +394,7 @@ export async function fetchLatestReleaseTag(
     // 直接访问 GitHub Releases API；本地缓存命中时不会产生请求。
     const res = await fetch(
       `${GITHUB_API}/repos/${owner}/${repo}/releases?per_page=1&page=1`,
-      { headers },
+      { headers: githubHeaders() },
     );
     if (res.status === 403 || res.status === 429) {
       console.warn(`[GitHub] latestReleaseTag 速率限制: ${owner}/${repo}`);
