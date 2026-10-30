@@ -566,15 +566,40 @@ function githubHeaders(): Record<string, string> {
 async function githubResponseError(res: Response): Promise<Error> {
   const remaining = res.headers.get('x-ratelimit-remaining')
   const reset = Number(res.headers.get('x-ratelimit-reset') || 0)
+  const resource = res.headers.get('x-ratelimit-resource')
   const retry = res.headers.get('retry-after')
+  const requestId = res.headers.get('x-github-request-id')
   const body = await res.text().catch(() => '')
-  if (res.status === 401) return new Error('GitHub Token 无效或已过期（HTTP 401），请重新验证 Token')
-  if (res.status === 403 || res.status === 429) {
-    if (remaining === '0') return new Error(`GitHub API 配额确实已耗尽，预计 ${reset ? new Date(reset * 1000).toLocaleTimeString() : '稍后'} 重置`)
-    if (retry) return new Error(`GitHub API 触发临时限流，请在 ${retry} 秒后重试`)
-    return new Error('GitHub API 返回 HTTP 403：可能是 Secondary Rate Limit、Token 权限或网络策略问题；响应未显示主配额耗尽')
+  let message = ''
+  try {
+    const parsed = JSON.parse(body)
+    message = typeof parsed?.message === 'string' ? parsed.message : ''
+  } catch {
+    message = body.slice(0, 240)
   }
-  return new Error(`GitHub API 请求失败（HTTP ${res.status}）${body.slice(0, 160)}`)
+  const detail = message ? `GitHub 返回：${message}` : 'GitHub 未返回可读错误说明'
+  const request = requestId ? `（Request ID: ${requestId}）` : ''
+
+  if (res.status === 401) {
+    return new Error(`GitHub Token 无效、已过期或未正确发送。请重新验证 Token。 ${detail}${request}`)
+  }
+  if (res.status === 403 || res.status === 429) {
+    if (remaining === '0') {
+      return new Error(`GitHub ${resource || 'API'} 主配额已耗尽，预计 ${reset ? new Date(reset * 1000).toLocaleTimeString() : '稍后'} 重置。 ${detail}${request}`)
+    }
+    if (retry) {
+      return new Error(`GitHub API 触发临时限流，请在 ${retry} 秒后重试。 ${detail}${request}`)
+    }
+    const normalized = message.toLowerCase()
+    if (normalized.includes('secondary rate limit') || normalized.includes('abuse detection')) {
+      return new Error(`GitHub Secondary Rate Limit：请求频率或并发过高，请暂停请求后再试。 ${detail}${request}`)
+    }
+    if (normalized.includes('resource not accessible') || normalized.includes('permission') || normalized.includes('must have')) {
+      return new Error(`GitHub Token 权限不足或资源不可访问，请检查 Token 的权限范围。 ${detail}${request}`)
+    }
+    return new Error(`GitHub API 返回 HTTP ${res.status}，主配额未显示耗尽；可能是临时风控、Token 权限或网络策略限制。 ${detail}${request}`)
+  }
+  return new Error(`GitHub API 请求失败（HTTP ${res.status}）。 ${detail}${request}`)
 }
 function mapRepoToApp(item: any): AppItem {
   const platforms = detectPlatforms(item.topics || [])

@@ -69,6 +69,7 @@ export default function RootLayout() {
           <TranslationProvider>
           <SafeAreaProvider style={{ flex: 1 }}>
             <StatusBar style="dark" backgroundColor="transparent" translucent={Platform.OS === 'android'} />
+            {initDone && (
             <Stack
               screenOptions={{
                 headerShown: false,
@@ -83,6 +84,7 @@ export default function RootLayout() {
               <Stack.Screen name="search-history" />
               <Stack.Screen name="+not-found" />
             </Stack>
+            )}
           </SafeAreaProvider>
           {/* AppSplash 自管最短展示时长(1.8s) + 淡出动画，结束后自行卸载 */}
           {showSplash && (
