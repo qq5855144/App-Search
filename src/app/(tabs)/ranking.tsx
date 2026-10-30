@@ -114,13 +114,15 @@ export default function RankingScreen() {
           ))}
         </ScrollView>
         <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginTop: 10 }}>
-          <View style={{ flexDirection: 'row', backgroundColor: '#E8E8E8', borderRadius: 18, padding: 3 }}>
-            {PERIOD_TABS.map(t => (
-              <Pressable key={t.key} onPress={() => handlePeriodChange(t.key)} style={{ paddingHorizontal: 14, paddingVertical: 5, borderRadius: 14, backgroundColor: period === t.key ? '#fff' : 'transparent' }}>
-                <Text style={{ fontSize: 13, fontWeight: period === t.key ? '700' : '400', color: period === t.key ? '#1A1A1A' : '#888' }}>{t.label}</Text>
-              </Pressable>
-            ))}
-          </View>
+          {rankType !== 'popular' && (
+            <View style={{ flexDirection: 'row', backgroundColor: '#E8E8E8', borderRadius: 18, padding: 3 }}>
+              {PERIOD_TABS.map(t => (
+                <Pressable key={t.key} onPress={() => handlePeriodChange(t.key)} style={{ paddingHorizontal: 14, paddingVertical: 5, borderRadius: 14, backgroundColor: period === t.key ? '#fff' : 'transparent' }}>
+                  <Text style={{ fontSize: 13, fontWeight: period === t.key ? '700' : '400', color: period === t.key ? '#1A1A1A' : '#888' }}>{t.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
           {!!lastUpdated && <Text style={{ fontSize: 10, color: '#BBB', marginLeft: 'auto' }}>获取于 {lastUpdated}</Text>}
         </View>
       </View>
