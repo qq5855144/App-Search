@@ -161,8 +161,14 @@ export async function smartSearch(
 ): Promise<{ items: AppItem[]; total_count: number; has_more: boolean }> {
   const page = options.page || 1
   const perPage = options.per_page || 30
-  const result = await _fetchAndFilter(q, options.sort || 'stars', options.order || 'desc', page, perPage, options.hasInstallableAssets ?? true)
-  return { items: result.items, total_count: result.total_count, has_more: page * perPage < result.total_count }
+  const result = await searchRepos(q, {
+    sort: options.sort || 'stars',
+    order: options.order || 'desc',
+    page,
+    per_page: perPage,
+    installableOnly: options.hasInstallableAssets ?? true,
+  })
+  return { ...result, has_more: page * perPage < result.total_count }
 }
 
 export async function searchRepos(
@@ -306,59 +312,11 @@ export async function filterInstallable<T extends { owner: string; repo: string 
 ): Promise<T[]> {
   if (items.length === 0) return items
 
-  // 1. 并行读取持久化缓存
-  const statusList = await Promise.all(
-    items.map((a) => getInstallableStatus(a.owner, a.repo))
-  )
-  const unknown = items.filter((_, i) => statusList[i] === null)
+  const statusList = await Promise.all(items.map((a) => getInstallableStatus(a.owner, a.repo)))
+  // 纯前端首次访问不再为每个搜索结果额外发起一次 Releases 请求。
+  // 仅剔除本机缓存中明确无安装包的项目；未知项目保留，避免错误过滤和配额消耗。
+  return items.filter((_, index) => statusList[index] !== false)
 
-  if (unknown.length === 0) {
-    // 全部命中缓存，严格按过滤结果返回
-    return items.filter((_, i) => statusList[i] === true)
-  }
-
-  try {
-    const repos = unknown.map((a) => ({ owner: a.owner, repo: a.repo }))
-    const data = await Promise.race([
-      callEdgeFunction({ action: 'check_installable_batch', params: { repos }, token: cachedToken }),
-      new Promise<null>((r) => setTimeout(() => r(null), timeoutMs)),
-    ])
-
-    if (!Array.isArray(data?.data)) {
-      // 超时：严格只保留已确认有安装包的，未知状态也剔除（宁可结果少，不展示无安装包项目）
-      return items.filter((_, i) => statusList[i] === true)
-    }
-
-    // 持久化写入（ok:true 和 ok:false 都缓存）
-    await Promise.all(
-      data.data.map((r: any) => r?.key
-        ? setInstallableStatus(r.key.split('/')[0], r.key.split('/')[1], r.ok === true)
-        : Promise.resolve()
-      )
-    )
-
-    // 严格过滤规则（只有明确确认有安装包才展示）：
-    // - ok:true  → 确认有安装包，保留
-    // - ok:false → 确认无安装包，剔除
-    // - ok:null / 无结果（网络错误）→ 状态未知，剔除（宁缺毋滥，等下次缓存命中再展示）
-    const resultMap = new Map<string, boolean | null>()
-    for (const r of data.data) {
-      if (r?.key) resultMap.set(r.key, r.ok === true ? true : r.ok === false ? false : null)
-    }
-
-    return items.filter((_, i) => {
-      const key = `${items[i].owner}/${items[i].repo}`
-      if (statusList[i] === true) return true    // L1/L2 缓存确认有
-      if (statusList[i] === false) return false  // L1/L2 缓存确认无
-
-      // statusList === null → 未知，以 API 结果为准
-      const apiResult = resultMap.get(key)
-      return apiResult === true                  // 严格：只保留 ok:true，null/undefined/false 均剔除
-    })
-  } catch {
-    // 异常时严格处理：只保留已确认有安装包的
-    return items.filter((_, i) => statusList[i] === true)
-  }
 }
 
 /**
