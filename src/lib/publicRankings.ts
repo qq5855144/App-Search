@@ -100,28 +100,45 @@ export async function fetchPublicRankings(type: PublicRankType, period: PublicRa
   const cached = cache.get(key)
   if (!force && cached && Date.now() - cached.at < CACHE_TTL) return cached.items
 
-  let items: PublicRankItem[]
-  if (type === 'popular') {
-    const result = await searchRepos('stars:>100', { sort: 'stars', order: 'desc', page: 1, per_page: 50, installableOnly: false })
-    items = result.items.map(fromApp)
-  } else if (type === 'growth') {
-    const gitStockPeriod = period === 'week' ? 'weekly' : period === 'month' ? 'monthly' : 'daily'
-    items = await fetchGitStock(gitStockPeriod)
-    items = items.sort((a, b) => b.score - a.score).map((item, index) => ({ ...item, rank_position: index + 1 }))
-  } else {
-    const gitStockPeriod = period === 'week' ? 'weekly' : period === 'month' ? 'monthly' : 'daily'
-    try {
-      items = await fetchGitStock(gitStockPeriod)
-    } catch (primaryError) {
+  const ossPeriod = period === 'week' ? 'past_week' : period === 'month' ? 'past_month' : 'past_24_hours'
+  const gitStockPeriod = period === 'week' ? 'weekly' : period === 'month' ? 'monthly' : 'daily'
+  try {
+    let items: PublicRankItem[]
+    if (type === 'popular') {
+      const result = await searchRepos('stars:>100', { sort: 'stars', order: 'desc', page: 1, per_page: 50, installableOnly: false })
+      items = result.items.map(fromApp)
+    } else if (type === 'growth') {
+      // GitStock 是 Star 增长榜主源；不可用时降级 OSS Insight，避免整页报空。
       try {
-        const ossPeriod = period === 'week' ? 'past_week' : period === 'month' ? 'past_month' : 'past_24_hours'
-        items = await fetchOssInsight(ossPeriod)
-      } catch {
-        throw primaryError
+        items = await fetchGitStock(gitStockPeriod)
+        items = items.sort((a, b) => b.score - a.score)
+      } catch (primaryError) {
+        try {
+          items = await fetchOssInsight(ossPeriod)
+        } catch {
+          throw primaryError
+        }
+      }
+    } else {
+      try {
+        items = await fetchGitStock(gitStockPeriod)
+      } catch (primaryError) {
+        try {
+          items = await fetchOssInsight(ossPeriod)
+        } catch {
+          throw primaryError
+        }
       }
     }
+    items = items.slice(0, 50).map((item, index) => ({ ...item, rank_position: index + 1 }))
+    cache.set(key, { at: Date.now(), items })
+    return items
+  } catch (error) {
+    // 刷新失败时保留最近一次成功结果；网络短暂异常不应把已加载榜单清空。
+    if (cached?.items.length) {
+      console.warn('[Rankings] Refresh failed; using stale cached data:', error)
+      return cached.items
+    }
+    throw error
   }
-  items = items.slice(0, 50).map((item, index) => ({ ...item, rank_position: index + 1 }))
-  cache.set(key, { at: Date.now(), items })
-  return items
 }
