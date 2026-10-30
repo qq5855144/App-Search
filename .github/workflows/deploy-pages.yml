@@ -37,7 +37,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      # Secret 非空时追加到 .env 覆盖默认值；未配置时保留仓库已提交的 .env 原始值
       - name: Override .env from Secrets (optional)
         env:
           _URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
