@@ -6,21 +6,46 @@
 import type { AppItem } from '@/types'
 import { smartSearch, searchRepos } from '@/lib/github'
 import { getFavorites, getDownloadHistory, getSearchHistory } from '@/lib/database'
+import { getAllEvents } from '@/lib/events'
 
 type QueryState = { table: string; filters: Record<string, any>; max: number; sort: string; ascending: boolean }
-function localRows(state: QueryState): Promise<any[]> {
-  if (state.table === 'app_rankings') {
-    const kind = state.filters.rank_type || 'hot'
-    if (kind === 'favorite') return getFavorites().then(rows => rows.map((r:any,i:number)=>({app_id:r.app_id,app_name:r.app_name,owner:r.owner,repo:r.repo,avatar_url:r.avatar_url,score:1,download_count:0,favorite_count:1,view_count:0,rank_position:i+1,updated_at:r.added_at})).slice(0,state.max))
-    if (kind === 'download') return getDownloadHistory().then(rows => {
-      const counts = new Map<string, any>()
-      for (const r of rows as any[]) { const k = r.owner+'/'+r.repo; const v=counts.get(k)||{app_id:r.app_id,app_name:r.app_name,owner:r.owner,repo:r.repo,avatar_url:r.avatar_url,score:0,download_count:0,favorite_count:0,view_count:0}; v.download_count++;v.score=v.download_count;counts.set(k,v) }
-      return [...counts.values()].sort((a,b)=>b.score-a.score).slice(0,state.max).map((v,i)=>({...v,rank_position:i+1,updated_at:new Date().toISOString()}))
-    })
-    return searchRepos('stars:>100', {sort:'stars',page:1,per_page:Math.min(state.max,50),installableOnly:false}).then(r=>r.items.map((v,i)=>({app_id:v.id,app_name:v.name,owner:v.owner,repo:v.repo,avatar_url:v.avatar_url,score:v.stars,download_count:0,favorite_count:0,view_count:0,rank_position:i+1,updated_at:v.updated_at})))
+async function localRows(state: QueryState): Promise<any[]> {
+  if (state.table !== 'app_rankings') return []
+  const kind = state.filters.rank_type || 'hot'
+  const period = state.filters.period || 'all'
+  const cutoff = period === 'week' ? Date.now() - 7 * 86400000 : period === 'month' ? Date.now() - 30 * 86400000 : 0
+  const within = (value: any) => !cutoff || (value && new Date(value).getTime() >= cutoff)
+  if (kind === 'favorite') {
+    const rows = await getFavorites()
+    return rows.filter((r:any) => within(r.added_at)).map((r:any,i:number)=>({app_id:r.app_id,app_name:r.app_name,owner:r.owner,repo:r.repo,avatar_url:r.avatar_url,score:1,download_count:0,favorite_count:1,view_count:0,rank_position:i+1,updated_at:r.added_at})).slice(0,state.max)
   }
-  return Promise.resolve([])
+  if (kind === 'download') {
+    const rows = await getDownloadHistory()
+    const counts = new Map<string, any>()
+    for (const r of rows as any[]) {
+      if (!within(r.download_time)) continue
+      const key = r.owner+'/'+r.repo
+      const value = counts.get(key) || {app_id:r.app_id,app_name:r.app_name,owner:r.owner,repo:r.repo,avatar_url:r.avatar_url,score:0,download_count:0,favorite_count:0,view_count:0}
+      value.download_count++; value.score=value.download_count; counts.set(key,value)
+    }
+    return [...counts.values()].sort((x,y)=>y.score-x.score).slice(0,state.max).map((v,i)=>({...v,rank_position:i+1,updated_at:new Date().toISOString()}))
+  }
+  const events = await getAllEvents()
+  const stats = new Map<string, any>()
+  for (const event of events as any[]) {
+    if (cutoff && event.created_at < cutoff) continue
+    if (!event.owner || !event.repo || !['view','download','favorite'].includes(event.event_type)) continue
+    const key = event.owner+'/'+event.repo
+    const value = stats.get(key) || {app_id:event.app_id || 0,app_name:event.app_name || event.repo,owner:event.owner,repo:event.repo,avatar_url:event.avatar_url || '',score:0,download_count:0,favorite_count:0,view_count:0}
+    if (event.event_type === 'view') value.view_count++
+    if (event.event_type === 'download') value.download_count++
+    if (event.event_type === 'favorite') value.favorite_count++
+    value.score=value.download_count*5+value.view_count+value.favorite_count*3
+    stats.set(key,value)
+  }
+  return [...stats.values()].sort((x,y)=>y.score-x.score).slice(0,state.max).map((v,i)=>({...v,rank_position:i+1,updated_at:new Date().toISOString()}))
 }
+
 function queryBuilder(table:string) {
   const state:QueryState={table,filters:{},max:50,sort:'rank_position',ascending:true}
   const q:any={select:()=>q,eq:(k:string,v:any)=>{state.filters[k]=v;return q},order:(k:string,o:any)=>{state.sort=k;state.ascending=!!o?.ascending;return q},limit:(n:number)=>{state.max=n;return q},then:(resolve:any,reject:any)=>localRows(state).then(data=>resolve({data,error:null}),reject)}
