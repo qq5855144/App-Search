@@ -115,9 +115,6 @@ importers:
       '@rn-primitives/tooltip':
         specifier: 1.4.0
         version: 1.4.0(@rn-primitives/portal@1.4.0(@types/react@19.2.15)(react-native-web@0.21.2(react-dom@19.2.0(react@19.2.0))(react@19.2.0))(react-native@0.83.2(@babel/core@7.29.7)(@types/react@19.2.15)(react@19.2.0))(react@19.2.0)(use-sync-external-store@1.6.0(react@19.2.0)))(@types/react@19.2.15)(react-dom@19.2.0(react@19.2.0))(react-native-web@0.21.2(react-dom@19.2.0(react@19.2.0))(react@19.2.0))(react-native@0.83.2(@babel/core@7.29.7)(@types/react@19.2.15)(react@19.2.0))(react@19.2.0)
-      '@supabase/supabase-js':
-        specifier: 2.103.1
-        version: 2.103.1
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
