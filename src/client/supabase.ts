@@ -59,7 +59,7 @@ export const supabase = {
     signOut: async()=>({error:null}),
   },
   functions: {
-    invoke: async(name:string, options:any={}) => {
+    invoke: async(name:string, options:any={}): Promise<any> => {
       if (name === 'search-catalog') {
         const b=options.body||{}
         const qualifiers=[b.platform && b.platform!=='全平台' ? 'topic:'+String(b.platform).toLowerCase() : '',b.language && b.language!=='全部' ? 'language:'+b.language : '',b.min_stars ? 'stars:>='+b.min_stars : '',...(Array.isArray(b.topics)&&b.topics.length ? ['('+b.topics.map((t:string)=>'topic:'+t).join(' OR ')+')'] : [])].filter(Boolean)
