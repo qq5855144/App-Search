@@ -37,7 +37,7 @@ export const supabase = {
     invoke: async(name:string, options:any={}) => {
       if (name === 'search-catalog') {
         const b=options.body||{}
-        const qualifiers=[b.platform && b.platform!=='全平台' ? 'topic:'+String(b.platform).toLowerCase() : '',b.language && b.language!=='全部' ? 'language:'+b.language : '',b.min_stars ? 'stars:>='+b.min_stars : '',...(Array.isArray(b.topics)?b.topics.map((t:string)=>'topic:'+t):[])].filter(Boolean)
+        const qualifiers=[b.platform && b.platform!=='全平台' ? 'topic:'+String(b.platform).toLowerCase() : '',b.language && b.language!=='全部' ? 'language:'+b.language : '',b.min_stars ? 'stars:>='+b.min_stars : '',(Array.isArray(b.topics)&&b.topics.length ? ['('+b.topics.map((t:string)=>'topic:'+t).join(' OR ')+')'] : [])].filter(Boolean)
         const q=[String(b.q||'').trim(),...qualifiers].filter(Boolean).join(' ') || 'stars:>0'
         try { const r=await smartSearch(q,{sort:b.sort||'stars',page:b.page||1,per_page:b.per_page||20,hasInstallableAssets:b.has_installable_assets!==false}); return {data:{data:r.items,total_count:r.total_count},error:null} }
         catch(e:any){return {data:null,error:{message:e?.message||'GitHub 搜索失败'}}}
