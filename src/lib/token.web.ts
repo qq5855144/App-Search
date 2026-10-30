@@ -9,7 +9,7 @@ export async function saveToken(token: string): Promise<void> {
 }
 
 export async function getToken(): Promise<string | null> {
-  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+  try { const token = localStorage.getItem(TOKEN_KEY); await setGitHubToken(token); return token; } catch { await setGitHubToken(null); return null; }
 }
 
 export async function clearToken(): Promise<void> {

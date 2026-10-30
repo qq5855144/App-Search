@@ -105,12 +105,8 @@ export default function DetailScreen() {
       } catch (e: any) {
         if (cancelled) return;
         const msg = e?.message || '加载失败';
-        // 识别速率限制错误
-        if (msg.includes('上限') || msg.includes('rate limit') || msg.includes('403')) {
-          setError('GitHub API 请求次数已达上限，请稍后再试或在「我的」页面配置 Token');
-        } else {
-          setError(msg);
-        }
+        // 保留 GitHub 客户端的准确错误分类（401、配额耗尽、Secondary Rate Limit 等）。
+        setError(msg || '加载失败，请稍后重试');
       } finally {
         if (!cancelled) setLoading(false);
       }

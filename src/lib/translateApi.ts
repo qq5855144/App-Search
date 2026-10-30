@@ -3,7 +3,6 @@
  * - 通过 Supabase Edge Function 调用百度翻译
  * - 内存缓存 + AsyncStorage 持久化，相同文本不重复请求
  */
-import { supabase } from '@/client/supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // 内存缓存：key = "to|text"
@@ -48,117 +47,52 @@ function persistCache() {
  * @param to    目标语言：'zh' | 'en'
  * @returns     译文，失败时返回原文
  */
-export async function translateText(text: string, to: 'zh' | 'en'): Promise<string> {
-  if (!text?.trim()) return text;
-
-  await ensureCacheLoaded();
-
-  const cacheKey = `${to}|${text}`;
-  const cached = memCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-
-  try {
-    const { data, error } = await supabase.functions.invoke('text-translation', {
-      body: { q: text, from: 'auto', to },
-    });
-    if (error) throw error;
-    if (data?.error_code) throw new Error(`API error ${data.error_code}`);
-
-    const result: string = (data?.result?.trans_result ?? [])
-      .map((r: { dst: string }) => r.dst)
-      .join('\n') || text;
-
-    memCache.set(cacheKey, result);
-    persistCache();
-    return result;
-  } catch {
-    return text; // 失败时降级返回原文
-  }
+async function translateRemote(text: string, to: 'zh' | 'en'): Promise<string> {
+  const lang = to === 'zh' ? 'zh-CN' : 'en'
+  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text.slice(0, 4500))}&langpair=autodetect|${lang}`
+  const response = await fetch(url, { headers: { Accept: 'application/json' } })
+  if (!response.ok) throw new Error(`translation provider ${response.status}`)
+  const json = await response.json()
+  const translated = json?.responseData?.translatedText
+  if (typeof translated !== 'string' || !translated.trim()) throw new Error('empty translation')
+  return translated
 }
 
-/**
- * 批量翻译（合并请求，减少 API 调用次数）
- * @param texts  原文数组
- * @param to     目标语言
- * @returns      译文数组，顺序与原文一一对应
- */
+export async function translateText(text: string, to: 'zh' | 'en'): Promise<string> {
+  if (!text?.trim()) return text
+  await ensureCacheLoaded()
+  const key = `${to}|${text}`
+  const cached = memCache.get(key)
+  if (cached !== undefined) return cached
+  try {
+    const result = await translateRemote(text, to)
+    memCache.set(key, result); persistCache(); return result
+  } catch { return text }
+}
+
 export async function translateBatch(texts: string[], to: 'zh' | 'en'): Promise<string[]> {
-  if (!texts.length) return texts;
-  await ensureCacheLoaded();
-
-  // 找出未缓存的条目
-  const uncached: { idx: number; text: string }[] = [];
-  const results = texts.map((t, idx) => {
-    const key = `${to}|${t}`;
-    const cached = memCache.get(key);
-    if (cached !== undefined) return cached;
-    uncached.push({ idx, text: t });
-    return null;
-  });
-
-  if (!uncached.length) return results as string[];
-
-  // 按换行拼接批量请求（最大 6000 字符）
-  const batches: typeof uncached[] = [];
-  let current: typeof uncached = [];
-  let len = 0;
-  for (const item of uncached) {
-    if (len + item.text.length > 5500 && current.length) {
-      batches.push(current);
-      current = [];
-      len = 0;
-    }
-    current.push(item);
-    len += item.text.length + 1;
+  if (!texts.length) return texts
+  await ensureCacheLoaded()
+  const output = new Array<string>(texts.length)
+  const pending: number[] = []
+  texts.forEach((value, index) => {
+    const cached = memCache.get(`${to}|${value}`)
+    if (cached !== undefined) output[index] = cached
+    else pending.push(index)
+  })
+  // 有界并发，避免第三方免费翻译服务触发频率限制。
+  for (let offset = 0; offset < pending.length; offset += 3) {
+    const group = pending.slice(offset, offset + 3)
+    const values = await Promise.all(group.map(async index => {
+      try { return await translateRemote(texts[index], to) } catch { return texts[index] }
+    }))
+    group.forEach((index, i) => {
+      output[index] = values[i]
+      if (values[i] !== texts[index]) memCache.set(`${to}|${texts[index]}`, values[i])
+    })
   }
-  if (current.length) batches.push(current);
-
-  for (const batch of batches) {
-    try {
-      const combined = batch.map((b) => b.text).join('\n');
-      const { data, error } = await supabase.functions.invoke('text-translation', {
-        body: { q: combined, from: 'auto', to },
-      });
-      if (error || data?.error_code) throw new Error('batch translate failed');
-
-      const translated: string[] = (data?.result?.trans_result ?? []).map(
-        (r: { dst: string }) => r.dst
-      );
-
-      // 数量校验：API 返回条数须等于发送条数，否则说明 API 对某行做了合并/拆分，
-      // 强行按索引映射会导致翻译文字错位 → 降级为逐条单独翻译
-      if (translated.length !== batch.length) {
-        for (const item of batch) {
-          try {
-            const { data: sd, error: se } = await supabase.functions.invoke('text-translation', {
-              body: { q: item.text, from: 'auto', to },
-            });
-            if (se || sd?.error_code) throw new Error('single translate failed');
-            const dst: string = (sd?.result?.trans_result ?? [])
-              .map((r: { dst: string }) => r.dst).join(' ') || item.text;
-            results[item.idx] = dst;
-            memCache.set(`${to}|${item.text}`, dst);
-          } catch {
-            results[item.idx] = item.text;
-          }
-        }
-        persistCache();
-        continue;
-      }
-
-      batch.forEach((item, i) => {
-        const dst = translated[i] ?? item.text;
-        results[item.idx] = dst;
-        memCache.set(`${to}|${item.text}`, dst);
-      });
-      persistCache();
-    } catch {
-      // 失败降级返回原文
-      batch.forEach((item) => { results[item.idx] = item.text; });
-    }
-  }
-
-  return results as string[];
+  persistCache()
+  return output
 }
 
 /** 清除翻译缓存 */

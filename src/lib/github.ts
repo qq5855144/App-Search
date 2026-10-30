@@ -63,42 +63,10 @@ async function setInstallableStatus(owner: string, repo: string, installable: bo
   await setCache(_installableCacheKey(owner, repo), installable, INSTALLABLE_TTL)
 }
 
-// 直接读取环境变量，避免依赖 supabase-js 客户端层
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://backend.appmiaoda.com/projects/supabase324230210180399104'
-const SUPABASE_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNibGsxcnFhNWZrMSIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNzQ4NTg1MjgyLCJleHAiOjIwNjQxNjEyODJ9.HieIBaJ2S_5RXOlMxAJdVv-2lRgrE_eEG3gRrIdUJOk'
-const EDGE_FN_URL = `${SUPABASE_URL}/functions/v1/github-proxy`
-
-export async function setGitHubToken(token: string | null) {
-  cachedToken = token
-}
-
-export async function getGitHubToken(): Promise<string | null> {
-  return cachedToken
-}
-
+// 纯前端模式：仅直连 GitHub 官方 API。
+export async function setGitHubToken(token: string | null) { cachedToken = token?.trim() || null }
+export async function getGitHubToken(): Promise<string | null> { return cachedToken }
 const GITHUB_API = 'https://api.github.com'
-
-/**
- * 原生 fetch 调用 Edge Function，代理失败时不抛出，返回 null 交由调用方处理
- */
-async function callEdgeFunction(body: Record<string, unknown>): Promise<any | null> {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return null
-  try {
-    const res = await fetch(EDGE_FN_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'apikey': SUPABASE_KEY,
-      },
-      body: JSON.stringify(body),
-    })
-    if (!res.ok) return null
-    return res.json()
-  } catch {
-    return null
-  }
-}
 
 function decodeReadmeContent(content: string): string {
   const raw = base64Decode(content || '')
@@ -115,14 +83,6 @@ function decodeReadmeContent(content: string): string {
   }
 }
 
-async function fetchReadmeViaEdge(owner: string, repo: string): Promise<string> {
-  const data = await callEdgeFunction({
-    action: 'readme',
-    params: { owner, repo },
-    token: cachedToken,
-  })
-  return decodeReadmeContent(data?.data?.content || '')
-}
 
 async function fetchReadmeDirect(owner: string, repo: string): Promise<string> {
   const rawBases = ['HEAD', 'main', 'master']
@@ -131,23 +91,18 @@ async function fetchReadmeDirect(owner: string, repo: string): Promise<string> {
     Accept: 'text/plain',
     ...(cachedToken ? { Authorization: `token ${cachedToken}` } : {}),
   }
-
-  const attempts = rawBases.flatMap((branch) =>
-    readmeFiles.map(async (file) => {
+  const attempts = rawBases.flatMap(branch =>
+    readmeFiles.map(async file => {
       try {
-        const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${file}`
-        const res = await fetch(url, { headers })
+        const res = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${file}`, { headers })
         if (!res.ok) return ''
-        const text = await res.text()
-        return text?.trim() ? text : ''
-      } catch {
-        return ''
-      }
-    }),
+        const value = await res.text()
+        return value.trim() ? value : ''
+      } catch { return '' }
+    })
   )
-
   const results = await Promise.all(attempts)
-  return results.find((item) => item.trim()) || ''
+  return results.find(value => value.trim()) || ''
 }
 
 /** GitHub API 直连兜底：搜索仓库 */
@@ -158,7 +113,7 @@ async function searchGitHubDirect(
   console.log('[GitHub] Using direct API for query:', q);
   const params = new URLSearchParams({
     q,
-    sort: options.sort || 'stars',
+    sort: options.sort === 'downloads' ? 'stars' : (options.sort || 'stars'),
     order: options.order || 'desc',
     page: String(options.page || 1),
     per_page: String(options.per_page || 30),
@@ -170,15 +125,7 @@ async function searchGitHubDirect(
   if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
   const res = await fetch(`${GITHUB_API}/search/repositories?${params}`, { headers })
   console.log('[GitHub] Direct API response status:', res.status);
-  if (res.status === 403 || res.status === 429) {
-    console.warn('[GitHub] API rate limit exceeded');
-    throw new Error('GitHub API 请求次数已达上限，请稍后再试或在「我的」页面配置 Token')
-  }
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    console.warn('[GitHub] API error:', res.status, text);
-    throw new Error(`GitHub API 请求失败 (${res.status})`)
-  }
+  if (!res.ok) throw await githubResponseError(res)
   const json = await res.json()
   const items = (json.items || []).map((item: any) => mapRepoToApp(item))
   console.log('[GitHub] Direct API returned', items.length, 'items');
@@ -199,48 +146,22 @@ export async function fetchSearchReposRaw(
   return _fetchSearchRepos(q, sort, order, page, perPage)
 }
 
-const SMART_SEARCH_URL = `${SUPABASE_URL}/functions/v1/smart-search`
-
-/**
- * 服务端一站式搜索：catalog + GitHub + 安装包过滤，单次请求完成
- * 彻底替代 fetchSearchReposRaw + filterInstallable 两阶段方案
- */
+/** 纯前端搜索：GitHub Search API + 本地安装包检测。 */
 export async function smartSearch(
   q: string,
   options: { sort?: string; order?: string; page?: number; per_page?: number; hasInstallableAssets?: boolean } = {}
 ): Promise<{ items: AppItem[]; total_count: number; has_more: boolean }> {
-  const body = {
-    q,
+  const page = options.page || 1
+  const perPage = options.per_page || 30
+  const result = await searchRepos(q, {
     sort: options.sort || 'stars',
     order: options.order || 'desc',
-    page: options.page || 1,
-    per_page: options.per_page || 30,
-    has_installable_assets: options.hasInstallableAssets ?? true,
-    token: cachedToken,
-  }
-  try {
-    const res = await fetch(SMART_SEARCH_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'apikey': SUPABASE_KEY,
-      },
-      body: JSON.stringify(body),
-    })
-    if (!res.ok) throw new Error(`smart-search ${res.status}`)
-    const json = await res.json()
-    const items = (json.data || []).map((item: any) =>
-      item.has_installable_assets !== undefined ? item : mapRepoToApp(item)
-    )
-    return { items, total_count: json.total_count || 0, has_more: json.has_more ?? false }
-  } catch {
-    // 降级：直接 GitHub 搜索（不过滤，兜底展示）
-    const raw = await _fetchSearchRepos(q, body.sort, body.order, body.page, body.per_page)
-    return { items: raw.items, total_count: raw.total_count, has_more: false }
-  }
+    page,
+    per_page: perPage,
+    installableOnly: options.hasInstallableAssets ?? true,
+  })
+  return { ...result, has_more: page * perPage < result.total_count }
 }
-
 
 export async function searchRepos(
   q: string,
@@ -295,22 +216,13 @@ async function _fetchAndFilter(
   // - 超时/限速时只剔除缓存明确为 false 的，保留未知项目（不误杀）
   // - 全部未知或全部被误判时兜底返回原列表（永不返回空）
   const filtered = await filterInstallable(raw.items)
-  const wasFiltered = filtered.length < raw.items.length
+  const wasFiltered = true
   return { items: filtered, total_count: raw.total_count, filtered: wasFiltered }
 }
 
 async function _fetchSearchRepos(
   q: string, sort: string, order: string, page: number, perPage: number
 ): Promise<{ items: AppItem[]; total_count: number }> {
-  const proxyData = await callEdgeFunction({
-    action: 'search',
-    params: { q, sort, order, page, per_page: perPage },
-    token: cachedToken,
-  })
-  if (proxyData?.data?.items) {
-    const items = proxyData.data.items.map((item: any) => mapRepoToApp(item))
-    return { items, total_count: proxyData.data.total_count || 0 }
-  }
   return searchGitHubDirect(q, { sort, order, page, per_page: perPage })
 }
 
@@ -320,65 +232,11 @@ async function _fetchSearchRepos(
  * - 只对未知的 repo 调用 check_installable_batch
  * - 失败或超时时返回已知缓存结果，通过 timedOut 标记告知调用方
  */
-export async function enrichApps(
-  items: AppItem[],
-  timeoutMs = 8000,
-): Promise<{ items: AppItem[]; timedOut: boolean }> {
-  if (items.length === 0) return { items, timedOut: false }
-
-  // 1. 并行读取持久化缓存
-  const statusList = await Promise.all(
-    items.map((a) => getInstallableStatus(a.owner, a.repo))
-  )
-
-  const unknown = items.filter((_, i) => statusList[i] === null)
-  const fromCache = items.map((a, i): AppItem =>
-    statusList[i] === true ? { ...a, has_installable_assets: true } : a
-  )
-
-  if (unknown.length === 0) return { items: fromCache, timedOut: false }
-
-  try {
-    const repos = unknown.map((a) => ({ owner: a.owner, repo: a.repo }))
-    const data = await Promise.race([
-      callEdgeFunction({ action: 'check_installable_batch', params: { repos }, token: cachedToken }),
-      new Promise<null>((r) => setTimeout(() => r(null), timeoutMs)),
-    ])
-
-    if (!Array.isArray(data?.data)) return { items: fromCache, timedOut: true }
-
-    // 持久化写入（ok:true 和 ok:false 都缓存，避免重复查询）
-    await Promise.all(
-      data.data.map((r: any) => r?.key
-        ? setInstallableStatus(r.key.split('/')[0], r.key.split('/')[1], r.ok === true)
-        : Promise.resolve()
-      )
-    )
-
-    const resultMap = new Map<string, any>()
-    for (const r of data.data) {
-      if (r?.key) resultMap.set(r.key, r)
-    }
-
-    return {
-      timedOut: false,
-      items: fromCache.map((app): AppItem => {
-        if (app.has_installable_assets) return app
-        const r = resultMap.get(`${app.owner}/${app.repo}`)
-        if (!r?.ok) return app
-        return {
-          ...app,
-          has_installable_assets: true,
-          latest_version: r.latest_version ?? app.latest_version,
-          latest_release_date: r.latest_release_date ?? app.latest_release_date,
-          total_downloads: r.total_downloads ?? 0,
-          platforms: [...new Set([...app.platforms, ...(r.platforms || [])])],
-        }
-      }),
-    }
-  } catch {
-    return { items: fromCache, timedOut: true }
-  }
+export async function enrichApps(items: AppItem[], _timeoutMs = 8000): Promise<{ items: AppItem[]; timedOut: boolean }> {
+  if (!items.length) return { items, timedOut: false }
+  const status = await Promise.all(items.map(app => getInstallableStatus(app.owner, app.repo)))
+  const enriched = items.map((app, index) => status[index] === true ? { ...app, has_installable_assets: true } : app)
+  return { items: enriched, timedOut: false }
 }
 
 /**
@@ -392,59 +250,11 @@ export async function filterInstallable<T extends { owner: string; repo: string 
 ): Promise<T[]> {
   if (items.length === 0) return items
 
-  // 1. 并行读取持久化缓存
-  const statusList = await Promise.all(
-    items.map((a) => getInstallableStatus(a.owner, a.repo))
-  )
-  const unknown = items.filter((_, i) => statusList[i] === null)
+  const statusList = await Promise.all(items.map((a) => getInstallableStatus(a.owner, a.repo)))
+  // 纯前端首次访问不再为每个搜索结果额外发起一次 Releases 请求。
+  // 仅剔除本机缓存中明确无安装包的项目；未知项目保留，避免错误过滤和配额消耗。
+  return items.filter((_, index) => statusList[index] !== false)
 
-  if (unknown.length === 0) {
-    // 全部命中缓存，严格按过滤结果返回
-    return items.filter((_, i) => statusList[i] === true)
-  }
-
-  try {
-    const repos = unknown.map((a) => ({ owner: a.owner, repo: a.repo }))
-    const data = await Promise.race([
-      callEdgeFunction({ action: 'check_installable_batch', params: { repos }, token: cachedToken }),
-      new Promise<null>((r) => setTimeout(() => r(null), timeoutMs)),
-    ])
-
-    if (!Array.isArray(data?.data)) {
-      // 超时：严格只保留已确认有安装包的，未知状态也剔除（宁可结果少，不展示无安装包项目）
-      return items.filter((_, i) => statusList[i] === true)
-    }
-
-    // 持久化写入（ok:true 和 ok:false 都缓存）
-    await Promise.all(
-      data.data.map((r: any) => r?.key
-        ? setInstallableStatus(r.key.split('/')[0], r.key.split('/')[1], r.ok === true)
-        : Promise.resolve()
-      )
-    )
-
-    // 严格过滤规则（只有明确确认有安装包才展示）：
-    // - ok:true  → 确认有安装包，保留
-    // - ok:false → 确认无安装包，剔除
-    // - ok:null / 无结果（网络错误）→ 状态未知，剔除（宁缺毋滥，等下次缓存命中再展示）
-    const resultMap = new Map<string, boolean | null>()
-    for (const r of data.data) {
-      if (r?.key) resultMap.set(r.key, r.ok === true ? true : r.ok === false ? false : null)
-    }
-
-    return items.filter((_, i) => {
-      const key = `${items[i].owner}/${items[i].repo}`
-      if (statusList[i] === true) return true    // L1/L2 缓存确认有
-      if (statusList[i] === false) return false  // L1/L2 缓存确认无
-
-      // statusList === null → 未知，以 API 结果为准
-      const apiResult = resultMap.get(key)
-      return apiResult === true                  // 严格：只保留 ok:true，null/undefined/false 均剔除
-    })
-  } catch {
-    // 异常时严格处理：只保留已确认有安装包的
-    return items.filter((_, i) => statusList[i] === true)
-  }
 }
 
 /**
@@ -462,28 +272,9 @@ export async function fetchRepoDetail(owner: string, repo: string): Promise<AppI
   const cacheKey = `repo:${owner}/${repo}`
   const cached = await getCache<AppItem>(cacheKey)
   if (cached) return cached
-  const data = await callEdgeFunction({
-    action: 'repo',
-    params: { owner, repo },
-    token: cachedToken,
-  })
-  let result: AppItem
-  if (data?.data) {
-    result = mapRepoToApp(data.data)
-  } else {
-    // 代理失败 → 直连
-    const headers: Record<string, string> = {
-      'Accept': 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    }
-    if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
-    const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}`, { headers })
-    if (res.status === 403 || res.status === 429) {
-      throw new Error('GitHub API 请求次数已达上限，请稍后再试或在「我的」页面配置 Token')
-    }
-    if (!res.ok) throw new Error(`获取仓库详情失败 (${res.status})`)
-    result = mapRepoToApp(await res.json())
-  }
+  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}`, { headers: githubHeaders() })
+  if (!res.ok) throw await githubResponseError(res)
+  const result = mapRepoToApp(await res.json())
   await setCache(cacheKey, result, 12 * HOUR)
   return result
 }
@@ -511,38 +302,16 @@ export async function fetchReleases(owner: string, repo: string, page = 1, bypas
     })),
   }))
 
-  const data = bypassCache
-    ? null // bypassCache 时跳过 Edge Function（它有独立缓存），直接走 GitHub API
-    : await callEdgeFunction({
-        action: 'releases',
-        params: { owner, repo, page },
-        token: cachedToken,
-      })
-  const list = data?.data ?? null
   let result: GitHubRelease[]
-  if (Array.isArray(list)) {
-    result = parseReleases(list)
-  } else {
-    // 代理失败 / bypassCache → 直连 GitHub API
-    // bypassCache 时加时间戳参数绕过 GitHub CDN 60 秒强制缓存
-    const headers: Record<string, string> = {
-      'Accept': 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    }
+  {
+    const headers = githubHeaders()
     if (bypassCache) {
-      // no-cache 头 + _t 时间戳双重保险，强制 CDN 回源
-      headers['Cache-Control'] = 'no-cache, no-store';
-      headers['Pragma'] = 'no-cache';
+      headers['Cache-Control'] = 'no-cache, no-store'
+      headers['Pragma'] = 'no-cache'
     }
-    if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
     const cacheBust = bypassCache ? `&_t=${Date.now()}` : ''
     const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/releases?page=${page}&per_page=10${cacheBust}`, { headers })
-    if (res.status === 403 || res.status === 429) {
-      // 速率限制：返回空数组，不抛错
-      console.warn(`[GitHub] Releases 速率限制: ${owner}/${repo}`);
-      return [];
-    }
-    if (!res.ok) throw new Error(`获取 Releases 失败 (${res.status})`)
+    if (!res.ok) throw await githubResponseError(res)
     result = parseReleases(await res.json())
   }
   // bypassCache 时不写入本地缓存，确保下次仍能取到最新数据
@@ -643,26 +412,10 @@ export async function fetchLatestReleaseTag(
   }
 
   try {
-    // 优先通过 Edge Function 代理
-    const data = await callEdgeFunction({
-      action: 'latest_release',
-      params: { owner, repo },
-      token: cachedToken,
-    });
-    const releaseTag = data?.data?.tag_name || data?.data?.tag_name;
-    if (typeof releaseTag === 'string' && releaseTag.length > 0) {
-      await setCache(cacheKey, releaseTag, 6 * HOUR);
-      return releaseTag;
-    }
-    // 代理失败或无数据 → 直连 GitHub API
-    const headers: Record<string, string> = {
-      'Accept': 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    };
-    if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`;
+    // 直接访问 GitHub Releases API；本地缓存命中时不会产生请求。
     const res = await fetch(
       `${GITHUB_API}/repos/${owner}/${repo}/releases?per_page=1&page=1`,
-      { headers },
+      { headers: githubHeaders() },
     );
     if (res.status === 403 || res.status === 429) {
       console.warn(`[GitHub] latestReleaseTag 速率限制: ${owner}/${repo}`);
@@ -689,55 +442,19 @@ export async function fetchReadme(owner: string, repo: string): Promise<string> 
   if (cached !== null) return cached
   const existing = readmeInFlight.get(cacheKey)
   if (existing) return existing
-
-  const job = (async () => {
-    const edgePromise = fetchReadmeViaEdge(owner, repo)
-    const directPromise = fetchReadmeDirect(owner, repo)
-
-    const result = await Promise.race([
-      Promise.any([
-        edgePromise.then((text) => {
-          if (!text.trim()) throw new Error('empty edge readme')
-          return text
-        }),
-        directPromise.then((text) => {
-          if (!text.trim()) throw new Error('empty direct readme')
-          return text
-        }),
-      ]).catch(() => ''),
-      Promise.allSettled([edgePromise, directPromise]).then((items) => {
-        for (const item of items) {
-          if (item.status === 'fulfilled' && item.value.trim()) return item.value
-        }
-        return ''
-      }),
-    ])
-
-    if (result.trim()) {
-      await setCache(cacheKey, result, DAY)
-    }
-    return result
-  })()
-
+  const job = fetchReadmeDirect(owner, repo).then(async value => {
+    if (value.trim()) await setCache(cacheKey, value, DAY)
+    return value
+  })
   readmeInFlight.set(cacheKey, job)
-  try {
-    return await job
-  } finally {
-    readmeInFlight.delete(cacheKey)
-  }
+  try { return await job } finally { readmeInFlight.delete(cacheKey) }
 }
 
 export async function fetchContributors(owner: string, repo: string): Promise<Array<{ login: string; avatar_url: string; html_url: string }>> {
-  const data = await callEdgeFunction({
-    action: 'contributors',
-    params: { owner, repo },
-    token: cachedToken,
-  })
-  return (data.data || []).map((c: any) => ({
-    login: c.login,
-    avatar_url: c.avatar_url,
-    html_url: c.html_url,
-  }))
+  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/contributors?per_page=30`, { headers: githubHeaders() })
+  if (!res.ok) throw await githubResponseError(res)
+  const data = await res.json()
+  return (Array.isArray(data) ? data : []).map((c: any) => ({ login: c.login, avatar_url: c.avatar_url, html_url: c.html_url }))
 }
 
 /**
@@ -760,9 +477,7 @@ export async function fetchUserStarred(): Promise<AppItem[]> {
         },
       }
     )
-    if (res.status === 401) throw new Error('Token 无效或已过期，请重新配置')
-    if (res.status === 403 || res.status === 429) throw new Error('GitHub API 请求次数已达上限，请稍后再试')
-    if (!res.ok) throw new Error(`GitHub API 请求失败 (${res.status})`)
+    if (!res.ok) throw await githubResponseError(res)
     const list: any[] = await res.json()
     results.push(...list.map(mapRepoToApp))
     if (list.length < perPage) break // 最后一页
@@ -830,11 +545,10 @@ export async function unstarRepo(owner: string, repo: string): Promise<void> {
 
 export async function fetchRateLimit(): Promise<{ remaining: number; limit: number; reset: number }> {
   try {
-    const data = await callEdgeFunction({
-      action: 'rate_limit',
-      token: cachedToken,
-    })
-    const core = data?.data?.resources?.core || data?.data?.rate || { remaining: 0, limit: 60, reset: 0 }
+    const res = await fetch(`${GITHUB_API}/rate_limit`, { headers: githubHeaders() })
+    if (!res.ok) throw await githubResponseError(res)
+    const data = await res.json()
+    const core = data?.resources?.search || data?.resources?.core || data?.rate || { remaining: 0, limit: 10, reset: 0 }
     return {
       remaining: core.remaining ?? 0,
       limit: core.limit ?? 60,
@@ -846,6 +560,22 @@ export async function fetchRateLimit(): Promise<{ remaining: number; limit: numb
   }
 }
 
+function githubHeaders(): Record<string, string> {
+  return { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(cachedToken ? { Authorization: `Bearer ${cachedToken}` } : {}) }
+}
+async function githubResponseError(res: Response): Promise<Error> {
+  const remaining = res.headers.get('x-ratelimit-remaining')
+  const reset = Number(res.headers.get('x-ratelimit-reset') || 0)
+  const retry = res.headers.get('retry-after')
+  const body = await res.text().catch(() => '')
+  if (res.status === 401) return new Error('GitHub Token 无效或已过期（HTTP 401），请重新验证 Token')
+  if (res.status === 403 || res.status === 429) {
+    if (remaining === '0') return new Error(`GitHub API 配额确实已耗尽，预计 ${reset ? new Date(reset * 1000).toLocaleTimeString() : '稍后'} 重置`)
+    if (retry) return new Error(`GitHub API 触发临时限流，请在 ${retry} 秒后重试`)
+    return new Error('GitHub API 返回 HTTP 403：可能是 Secondary Rate Limit、Token 权限或网络策略问题；响应未显示主配额耗尽')
+  }
+  return new Error(`GitHub API 请求失败（HTTP ${res.status}）${body.slice(0, 160)}`)
+}
 function mapRepoToApp(item: any): AppItem {
   const platforms = detectPlatforms(item.topics || [])
   const ownerLogin = item.owner?.login || ''
