@@ -123,7 +123,15 @@ async function searchGitHubDirect(
     'X-GitHub-Api-Version': '2022-11-28',
   }
   if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
-  const res = await fetch(`${GITHUB_API}/search/repositories?${params}`, { headers })
+  let res = await fetch(`${GITHUB_API}/search/repositories?${params}`, { headers })
+  // 公开仓库搜索不需要 Token。若已保存的 Token 失效，自动降级匿名请求，
+  // 避免一个过期凭据让首页、发现、搜索和热门榜全部失效。
+  if (res.status === 401 && cachedToken) {
+    const anonymousHeaders = { ...headers }
+    delete anonymousHeaders.Authorization
+    console.warn('[GitHub] Saved token rejected; retrying public search anonymously.')
+    res = await fetch(`${GITHUB_API}/search/repositories?${params}`, { headers: anonymousHeaders })
+  }
   console.log('[GitHub] Direct API response status:', res.status);
   if (!res.ok) throw await githubResponseError(res)
   const json = await res.json()
