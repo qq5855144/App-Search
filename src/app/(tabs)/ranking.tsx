@@ -1,6 +1,6 @@
 /**
- * 全局排行榜页
- * 数据来自 Supabase app_rankings 表（由 aggregate-rankings Edge Function 聚合）
+ * 本机排行榜页
+ * 榜单由 GitHub 公开数据与当前设备本地事件计算，不依赖远程聚合服务
  * 支持：热门榜 / 下载榜 / 收藏榜 / 搜索热词  ×  周榜 / 月榜 / 总榜
  */
 import React, { useCallback, useState } from 'react';
@@ -222,7 +222,8 @@ export default function RankingScreen() {
       {/* ── 顶部导航栏：标题 + 榜单类型 + 周期 三行紧凑布局 ── */}
       <View style={{ backgroundColor: '#F5F6F8', paddingTop: 12, paddingBottom: 4 }}>
         {/* 标题 */}
-        <Text style={{ fontSize: 22, fontWeight: '700', color: '#1A1A1A', paddingHorizontal: 16, marginBottom: 10 }}>排行榜</Text>
+        <Text style={{ fontSize: 22, fontWeight: '700', color: '#1A1A1A', paddingHorizontal: 16, marginBottom: 10 }}>本机榜单</Text>
+        <Text style={{ fontSize: 11, color: '#999', paddingHorizontal: 16, marginBottom: 8 }}>热门榜按本机浏览行为统计；下载榜和收藏榜仅统计本设备记录</Text>
 
         {/* 榜单类型 Tabs */}
         <ScrollView
