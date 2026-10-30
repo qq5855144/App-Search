@@ -285,62 +285,8 @@ let _uploading = false
  * 每次搜索后 fire-and-forget 调用，确保热词能在服务端累加。
  */
 export async function uploadPendingEventsToTrack(): Promise<number> {
-  if (_uploading) return 0
-  _uploading = true
-  try {
-    const all = await getAllEvents()
-    if (all.length === 0) return 0
-
-    const cursorStr = await getUploadCursor()
-    const cursor = Number(cursorStr) || 0
-
-    const pending = all
-      .filter((e) => e.created_at > cursor)
-      .slice(-UPLOAD_BATCH)
-
-    if (pending.length === 0) return 0
-
-    const deviceId = await getOrCreateDeviceId()
-    const rows = pending.map((e) => ({
-      client_event_id: e.id,
-      app_id:     e.app_id ?? 0,
-      app_name:   e.app_name ?? '',
-      owner:      e.owner ?? '',
-      repo:       e.repo ?? '',
-      avatar_url: e.avatar_url ?? '',
-      event_type: e.event_type,
-      keyword:    e.keyword ?? null,
-      platform:   e.platform ?? null,
-      device_id:  deviceId,
-    }))
-
-    // 直接 fetch，不依赖 supabase client（兼容所有平台）
-    const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? ''
-    const ANON_KEY     = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? ''
-    if (!SUPABASE_URL) return 0
-
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/track-event`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${ANON_KEY}`,
-        'apikey': ANON_KEY,
-      },
-      body: JSON.stringify({ events: rows }),
-    })
-
-    if (!res.ok) return 0
-    const data = await res.json().catch(() => null)
-    if (!data?.ok || typeof data.inserted !== 'number' || data.inserted < pending.length) return 0
-
-    const newCursor = Math.max(...pending.map((e) => e.created_at))
-    await saveUploadCursor(String(newCursor))
-    return pending.length
-  } catch {
-    return 0
-  } finally {
-    _uploading = false
-  }
+  // 纯前端模式：事件仅保存在当前设备，不再向 Supabase 上传。
+  return 0
 }
 
 /**
@@ -348,49 +294,7 @@ export async function uploadPendingEventsToTrack(): Promise<number> {
  * Uses a cursor so already-uploaded events are not re-sent.
  * Safe to call on app foreground / network reconnect.
  */
-export async function uploadPendingEvents(
-  supabaseFunctionsInvoke: (name: string, opts: { body: unknown }) => Promise<{ ok?: boolean; inserted?: number }>
-): Promise<number> {
-  try {
-    const all = await getAllEvents()
-    if (all.length === 0) return 0
-
-    const cursorStr = await getUploadCursor()
-    const cursor = Number(cursorStr) || 0
-
-    // Events are stored newest-first; find unuploaded ones (created_at > cursor)
-    const pending = all
-      .filter((e) => e.created_at > cursor)
-      .slice(-UPLOAD_BATCH)  // oldest UPLOAD_BATCH among pending
-
-    if (pending.length === 0) return 0
-
-    const deviceId = await getOrCreateDeviceId()
-    const rows = pending.map((e) => ({
-      client_event_id: e.id,
-      app_id:     e.app_id ?? 0,
-      app_name:   e.app_name ?? '',
-      owner:      e.owner ?? '',
-      repo:       e.repo ?? '',
-      avatar_url: e.avatar_url ?? '',
-      event_type: e.event_type,
-      keyword:    e.keyword ?? null,
-      platform:   e.platform ?? null,
-      device_id:  deviceId,
-    }))
-
-    const result = await supabaseFunctionsInvoke('track-event', { body: { events: rows } }) as unknown as {
-      ok?: boolean
-      inserted?: number
-    }
-    if (!result?.ok || typeof result.inserted !== 'number' || result.inserted < pending.length) return 0
-
-    // Advance cursor to the latest uploaded event's timestamp
-    const newCursor = Math.max(...pending.map((e) => e.created_at))
-    await saveUploadCursor(String(newCursor))
-
-    return pending.length
-  } catch {
-    return 0
-  }
+export async function uploadPendingEvents(): Promise<number> {
+  // 无后端时不上传事件；本地搜索/浏览记录仍可供本机热词与榜单使用。
+  return 0
 }
