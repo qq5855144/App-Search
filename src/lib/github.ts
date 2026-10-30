@@ -529,7 +529,7 @@ export async function fetchRateLimit(): Promise<{ remaining: number; limit: numb
     const res = await fetch(`${GITHUB_API}/rate_limit`, { headers: githubHeaders() })
     if (!res.ok) throw await githubResponseError(res)
     const data = await res.json()
-    const core = data?.resources?.core || data?.rate || { remaining: 0, limit: 60, reset: 0 }
+    const core = data?.resources?.search || data?.resources?.core || data?.rate || { remaining: 0, limit: 10, reset: 0 }
     return {
       remaining: core.remaining ?? 0,
       limit: core.limit ?? 60,
