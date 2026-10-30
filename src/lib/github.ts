@@ -84,6 +84,27 @@ function decodeReadmeContent(content: string): string {
 }
 
 
+async function fetchReadmeDirect(owner: string, repo: string): Promise<string> {
+  const rawBases = ['HEAD', 'main', 'master']
+  const readmeFiles = ['README.md', 'readme.md', 'Readme.md', 'README.MD']
+  const headers: Record<string, string> = {
+    Accept: 'text/plain',
+    ...(cachedToken ? { Authorization: `token ${cachedToken}` } : {}),
+  }
+  const attempts = rawBases.flatMap(branch =>
+    readmeFiles.map(async file => {
+      try {
+        const res = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${file}`, { headers })
+        if (!res.ok) return ''
+        const value = await res.text()
+        return value.trim() ? value : ''
+      } catch { return '' }
+    })
+  )
+  const results = await Promise.all(attempts)
+  return results.find(value => value.trim()) || ''
+}
+
 /** GitHub API 直连兜底：搜索仓库 */
 async function searchGitHubDirect(
   q: string,
