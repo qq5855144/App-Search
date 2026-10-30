@@ -121,7 +121,7 @@ async function searchGitHubDirect(
   console.log('[GitHub] Using direct API for query:', q);
   const params = new URLSearchParams({
     q,
-    sort: options.sort || 'stars',
+    sort: options.sort === 'downloads' ? 'stars' : (options.sort || 'stars'),
     order: options.order || 'desc',
     page: String(options.page || 1),
     per_page: String(options.per_page || 30),
