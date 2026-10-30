@@ -49,7 +49,9 @@ export async function saveToken(token: string): Promise<void> {
 }
 
 export async function getToken(): Promise<string | null> {
-  return storage.getItem(TOKEN_KEY)
+  const token = await storage.getItem(TOKEN_KEY)
+  await setGitHubToken(token)
+  return token
 }
 
 export async function clearToken(): Promise<void> {
