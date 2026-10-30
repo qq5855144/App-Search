@@ -39,7 +39,10 @@ jobs:
         with:
           # `tools` is a retired SDK package and makes sdkmanager exit with code 1.
           # Install only SDK packages still published by Google's repository.
-          packages: 'platform-tools,platforms;android-36,build-tools;36.0.0'
+          packages: |
+            platform-tools
+            platforms;android-36
+            build-tools;36.0.0
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
