@@ -456,9 +456,7 @@ export async function fetchUserStarred(): Promise<AppItem[]> {
         },
       }
     )
-    if (res.status === 401) throw new Error('Token 无效或已过期，请重新配置')
-    if (res.status === 403 || res.status === 429) throw new Error('GitHub API 请求次数已达上限，请稍后再试')
-    if (!res.ok) throw new Error(`GitHub API 请求失败 (${res.status})`)
+    if (!res.ok) throw await githubResponseError(res)
     const list: any[] = await res.json()
     results.push(...list.map(mapRepoToApp))
     if (list.length < perPage) break // 最后一页
