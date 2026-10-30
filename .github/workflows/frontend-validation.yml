@@ -1,0 +1,36 @@
+name: Frontend validation
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - refactor/frontend-only-no-backend
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+      - name: TypeScript check
+        run: npx tsc --noEmit
+      - name: Export web app
+        run: npx expo export --platform web
+        env:
+          CI: true
