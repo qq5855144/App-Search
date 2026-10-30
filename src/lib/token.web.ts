@@ -4,8 +4,10 @@ import { setGitHubToken } from './github';
 const TOKEN_KEY = 'github_pat';
 
 export async function saveToken(token: string): Promise<void> {
-  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* ignore */ }
-  await setGitHubToken(token);
+  // 不要在 localStorage 写入失败时仍向 UI 报告“已保存”。
+  if (typeof localStorage === 'undefined') throw new Error('当前浏览器不支持本地 Token 存储')
+  localStorage.setItem(TOKEN_KEY, token)
+  await setGitHubToken(token)
 }
 
 export async function getToken(): Promise<string | null> {
