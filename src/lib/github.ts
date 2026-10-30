@@ -63,42 +63,12 @@ async function setInstallableStatus(owner: string, repo: string, installable: bo
   await setCache(_installableCacheKey(owner, repo), installable, INSTALLABLE_TTL)
 }
 
-// 直接读取环境变量，避免依赖 supabase-js 客户端层
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://backend.appmiaoda.com/projects/supabase324230210180399104'
-const SUPABASE_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNibGsxcnFhNWZrMSIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNzQ4NTg1MjgyLCJleHAiOjIwNjQxNjEyODJ9.HieIBaJ2S_5RXOlMxAJdVv-2lRgrE_eEG3gRrIdUJOk'
-const EDGE_FN_URL = `${SUPABASE_URL}/functions/v1/github-proxy`
-
-export async function setGitHubToken(token: string | null) {
-  cachedToken = token
-}
-
-export async function getGitHubToken(): Promise<string | null> {
-  return cachedToken
-}
-
+// 纯前端模式：仅直连 GitHub 官方 API。
+export async function setGitHubToken(token: string | null) { cachedToken = token?.trim() || null }
+export async function getGitHubToken(): Promise<string | null> { return cachedToken }
 const GITHUB_API = 'https://api.github.com'
 
-/**
- * 原生 fetch 调用 Edge Function，代理失败时不抛出，返回 null 交由调用方处理
- */
-async function callEdgeFunction(body: Record<string, unknown>): Promise<any | null> {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return null
-  try {
-    const res = await fetch(EDGE_FN_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'apikey': SUPABASE_KEY,
-      },
-      body: JSON.stringify(body),
-    })
-    if (!res.ok) return null
-    return res.json()
-  } catch {
-    return null
-  }
-}
+async function callEdgeFunction(_body: Record<string, unknown>): Promise<any | null> { return null }
 
 function decodeReadmeContent(content: string): string {
   const raw = base64Decode(content || '')
@@ -115,14 +85,7 @@ function decodeReadmeContent(content: string): string {
   }
 }
 
-async function fetchReadmeViaEdge(owner: string, repo: string): Promise<string> {
-  const data = await callEdgeFunction({
-    action: 'readme',
-    params: { owner, repo },
-    token: cachedToken,
-  })
-  return decodeReadmeContent(data?.data?.content || '')
-}
+async function fetchReadmeViaEdge(_owner: string, _repo: string): Promise<string> { return '' }
 
 async function fetchReadmeDirect(owner: string, repo: string): Promise<string> {
   const rawBases = ['HEAD', 'main', 'master']
@@ -170,15 +133,7 @@ async function searchGitHubDirect(
   if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
   const res = await fetch(`${GITHUB_API}/search/repositories?${params}`, { headers })
   console.log('[GitHub] Direct API response status:', res.status);
-  if (res.status === 403 || res.status === 429) {
-    console.warn('[GitHub] API rate limit exceeded');
-    throw new Error('GitHub API 请求次数已达上限，请稍后再试或在「我的」页面配置 Token')
-  }
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    console.warn('[GitHub] API error:', res.status, text);
-    throw new Error(`GitHub API 请求失败 (${res.status})`)
-  }
+  if (!res.ok) throw await githubResponseError(res)
   const json = await res.json()
   const items = (json.items || []).map((item: any) => mapRepoToApp(item))
   console.log('[GitHub] Direct API returned', items.length, 'items');
@@ -199,48 +154,16 @@ export async function fetchSearchReposRaw(
   return _fetchSearchRepos(q, sort, order, page, perPage)
 }
 
-const SMART_SEARCH_URL = `${SUPABASE_URL}/functions/v1/smart-search`
-
-/**
- * 服务端一站式搜索：catalog + GitHub + 安装包过滤，单次请求完成
- * 彻底替代 fetchSearchReposRaw + filterInstallable 两阶段方案
- */
+/** 纯前端搜索：GitHub Search API + 本地安装包检测。 */
 export async function smartSearch(
   q: string,
   options: { sort?: string; order?: string; page?: number; per_page?: number; hasInstallableAssets?: boolean } = {}
 ): Promise<{ items: AppItem[]; total_count: number; has_more: boolean }> {
-  const body = {
-    q,
-    sort: options.sort || 'stars',
-    order: options.order || 'desc',
-    page: options.page || 1,
-    per_page: options.per_page || 30,
-    has_installable_assets: options.hasInstallableAssets ?? true,
-    token: cachedToken,
-  }
-  try {
-    const res = await fetch(SMART_SEARCH_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'apikey': SUPABASE_KEY,
-      },
-      body: JSON.stringify(body),
-    })
-    if (!res.ok) throw new Error(`smart-search ${res.status}`)
-    const json = await res.json()
-    const items = (json.data || []).map((item: any) =>
-      item.has_installable_assets !== undefined ? item : mapRepoToApp(item)
-    )
-    return { items, total_count: json.total_count || 0, has_more: json.has_more ?? false }
-  } catch {
-    // 降级：直接 GitHub 搜索（不过滤，兜底展示）
-    const raw = await _fetchSearchRepos(q, body.sort, body.order, body.page, body.per_page)
-    return { items: raw.items, total_count: raw.total_count, has_more: false }
-  }
+  const page = options.page || 1
+  const perPage = options.per_page || 30
+  const result = await _fetchAndFilter(q, options.sort || 'stars', options.order || 'desc', page, perPage, options.hasInstallableAssets ?? true)
+  return { items: result.items, total_count: result.total_count, has_more: page * perPage < result.total_count }
 }
-
 
 export async function searchRepos(
   q: string,
@@ -302,15 +225,6 @@ async function _fetchAndFilter(
 async function _fetchSearchRepos(
   q: string, sort: string, order: string, page: number, perPage: number
 ): Promise<{ items: AppItem[]; total_count: number }> {
-  const proxyData = await callEdgeFunction({
-    action: 'search',
-    params: { q, sort, order, page, per_page: perPage },
-    token: cachedToken,
-  })
-  if (proxyData?.data?.items) {
-    const items = proxyData.data.items.map((item: any) => mapRepoToApp(item))
-    return { items, total_count: proxyData.data.total_count || 0 }
-  }
   return searchGitHubDirect(q, { sort, order, page, per_page: perPage })
 }
 
@@ -478,10 +392,7 @@ export async function fetchRepoDetail(owner: string, repo: string): Promise<AppI
     }
     if (cachedToken) headers['Authorization'] = `Bearer ${cachedToken}`
     const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}`, { headers })
-    if (res.status === 403 || res.status === 429) {
-      throw new Error('GitHub API 请求次数已达上限，请稍后再试或在「我的」页面配置 Token')
-    }
-    if (!res.ok) throw new Error(`获取仓库详情失败 (${res.status})`)
+    if (!res.ok) throw await githubResponseError(res)
     result = mapRepoToApp(await res.json())
   }
   await setCache(cacheKey, result, 12 * HOUR)
@@ -728,16 +639,10 @@ export async function fetchReadme(owner: string, repo: string): Promise<string> 
 }
 
 export async function fetchContributors(owner: string, repo: string): Promise<Array<{ login: string; avatar_url: string; html_url: string }>> {
-  const data = await callEdgeFunction({
-    action: 'contributors',
-    params: { owner, repo },
-    token: cachedToken,
-  })
-  return (data.data || []).map((c: any) => ({
-    login: c.login,
-    avatar_url: c.avatar_url,
-    html_url: c.html_url,
-  }))
+  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/contributors?per_page=30`, { headers: githubHeaders() })
+  if (!res.ok) throw await githubResponseError(res)
+  const data = await res.json()
+  return (Array.isArray(data) ? data : []).map((c: any) => ({ login: c.login, avatar_url: c.avatar_url, html_url: c.html_url }))
 }
 
 /**
@@ -830,11 +735,10 @@ export async function unstarRepo(owner: string, repo: string): Promise<void> {
 
 export async function fetchRateLimit(): Promise<{ remaining: number; limit: number; reset: number }> {
   try {
-    const data = await callEdgeFunction({
-      action: 'rate_limit',
-      token: cachedToken,
-    })
-    const core = data?.data?.resources?.core || data?.data?.rate || { remaining: 0, limit: 60, reset: 0 }
+    const res = await fetch(`${GITHUB_API}/rate_limit`, { headers: githubHeaders() })
+    if (!res.ok) throw await githubResponseError(res)
+    const data = await res.json()
+    const core = data?.resources?.core || data?.rate || { remaining: 0, limit: 60, reset: 0 }
     return {
       remaining: core.remaining ?? 0,
       limit: core.limit ?? 60,
@@ -846,6 +750,22 @@ export async function fetchRateLimit(): Promise<{ remaining: number; limit: numb
   }
 }
 
+function githubHeaders(): Record<string, string> {
+  return { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(cachedToken ? { Authorization: `Bearer ${cachedToken}` } : {}) }
+}
+async function githubResponseError(res: Response): Promise<Error> {
+  const remaining = res.headers.get('x-ratelimit-remaining')
+  const reset = Number(res.headers.get('x-ratelimit-reset') || 0)
+  const retry = res.headers.get('retry-after')
+  const body = await res.text().catch(() => '')
+  if (res.status === 401) return new Error('GitHub Token 无效或已过期（HTTP 401），请重新验证 Token')
+  if (res.status === 403 || res.status === 429) {
+    if (remaining === '0') return new Error(`GitHub API 配额确实已耗尽，预计 ${reset ? new Date(reset * 1000).toLocaleTimeString() : '稍后'} 重置`)
+    if (retry) return new Error(`GitHub API 触发临时限流，请在 ${retry} 秒后重试`)
+    return new Error('GitHub API 返回 HTTP 403：可能是 Secondary Rate Limit、Token 权限或网络策略问题；响应未显示主配额耗尽')
+  }
+  return new Error(`GitHub API 请求失败（HTTP ${res.status}）${body.slice(0, 160)}`)
+}
 function mapRepoToApp(item: any): AppItem {
   const platforms = detectPlatforms(item.topics || [])
   const ownerLogin = item.owner?.login || ''
