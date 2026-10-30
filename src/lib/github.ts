@@ -224,7 +224,7 @@ async function _fetchAndFilter(
   // - 超时/限速时只剔除缓存明确为 false 的，保留未知项目（不误杀）
   // - 全部未知或全部被误判时兜底返回原列表（永不返回空）
   const filtered = await filterInstallable(raw.items)
-  const wasFiltered = filtered.length < raw.items.length
+  const wasFiltered = true
   return { items: filtered, total_count: raw.total_count, filtered: wasFiltered }
 }
 
