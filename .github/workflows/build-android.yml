@@ -40,16 +40,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Override .env from Secrets (optional)
-        env:
-          _URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-          _KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
-          _AID: ${{ secrets.EXPO_PUBLIC_APP_ID }}
-        run: |
-          [ -n "$_URL" ] && echo "EXPO_PUBLIC_SUPABASE_URL=$_URL" >> .env || true
-          [ -n "$_KEY" ] && echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=$_KEY" >> .env || true
-          [ -n "$_AID" ] && echo "EXPO_PUBLIC_APP_ID=$_AID"          >> .env || true
-
       - name: Set versionCode + auto-increment patch version
         run: |
           python3 -c "
