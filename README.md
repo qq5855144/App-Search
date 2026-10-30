@@ -60,22 +60,24 @@
 - `/downloads`：下载记录
 - `/detail/[id]`：应用详情页
 
-## 数据架构
-- 本地数据：Expo SQLite / Web localStorage，用于收藏、下载记录、搜索历史和缓存
-- 云端数据：Supabase `app_catalog`、`app_events`、`search_hot_words` 等表
-- 搜索链路：前端搜索页调用服务端智能搜索或 Supabase 目录查询，结果侧重可安装开源应用
+## 数据架构（纯前端）
+- **无自建后端**：应用不依赖 Supabase、Edge Functions、数据库服务或自建 API。
+- **仓库搜索/详情/Release/Star/贡献者/配额**：客户端直接访问 GitHub REST API；Token 仅保存在设备本地（Web 使用 localStorage，Android/iOS 使用 SecureStore）。
+- **本地数据**：收藏、下载记录、搜索历史、已安装记录、缓存和行为统计保存在设备本地（Web localStorage / 原生 SQLite 或 AsyncStorage）。
+- **发现与榜单**：发现页直接使用 GitHub Search qualifiers；榜单根据 GitHub 公开数据及当前设备的本地收藏/下载/浏览事件生成。不同设备之间不再共享行为统计。
+- **翻译**：README 翻译由客户端直接请求 MyMemory 公共翻译接口，并缓存结果；翻译服务不可用时保留原文。
 
-## 搜索与过滤优化建议
-- 前端：增加平台、语言、最低 stars、更新时间、是否有 Release 安装包等筛选控件，并将筛选条件体现在结果摘要中
-- 前端：为搜索输入增加 300ms 防抖、取消过期请求、空结果推荐相近热词，降低重复请求和用户等待感
-- 后端：将当前多字段 `ILIKE` 搜索升级为带权重的全文搜索 RPC，支持 `platforms/topics/language/min_stars/sort/page/per_page` 参数
-- 后端：为安装包状态、平台数组、更新时间与热度字段建立组合索引或物化视图，避免客户端二次过滤和大范围扫描
-- 安全：统一维护服务端敏感词/黑名单规则，前端仅做即时提示，最终过滤结果以服务端为准
+## 纯前端能力边界
+- GitHub API 的搜索、Release、仓库详情和 Star 操作仍需要网络；配置 Token 可提升认证请求额度，但 Token 不会绕过 GitHub 的 Secondary Rate Limit。
+- 热搜、下载榜、收藏榜和行为统计为设备本地数据，不再伪装成全站实时统计。
+- GitHub API 不提供仓库 Release 安装包的批量搜索接口，因此首次搜索不为每个仓库额外发起探测请求；安装包信息在详情页读取并缓存，未知安装包状态不会误过滤搜索结果。
+- 翻译依赖第三方公共翻译服务，不依赖本项目后端；若要求完全离线翻译，需要额外内置离线语言模型/词典。
 
-## 未完成事项与下一步
-- 将高级筛选 UI 与服务端 RPC 参数打通
-- 补充搜索排序策略：综合 stars、更新时间、下载量、安装包可信度
-- 为启动页在不同 Android 分辨率上补充截图回归检查
+## 本次改造重点
+- 移除客户端对 Supabase URL、匿名密钥、数据库表和 Edge Functions 的运行时依赖。
+- 修复 Token 初始化链路，读取本地 Token 时同步到 GitHub 请求层。
+- 区分 Token 无效（401）、主配额耗尽（403 且剩余配额为 0）和 Secondary Rate Limit/权限/网络策略导致的 403，避免误报“未配置 Token”。
+- 搜索结果使用本地缓存，未知安装包状态默认保留，减少额外 API 请求和错误空结果。
 
 ---
 
